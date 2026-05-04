@@ -32,3 +32,15 @@ Backend delivered separately in `pushcare-backend/`.
 ```bash
 pnpm build   # → dist/  — deploy to Vercel / Cloudflare Pages / any static host
 ```
+
+## Environment & data routing
+
+| Variable | Purpose |
+|----------|---------|
+| `VITE_PUSHCARE_API_URL` | Base URL for the PushCare REST API (no trailing slash). Required when using REST-backed lists. |
+| `VITE_PUSHCARE_DATA_SOURCE` | `auto` \| `rest` \| `supabase` \| `mock` — picks where dashboard entities load from while Supabase Auth can stay enabled. |
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Browser Supabase client for sign-in and optional Postgres (RLS) data. |
+
+REST requests use a configurable timeout, limited retries on 5xx, and attach the Supabase session JWT as `Authorization: Bearer` when configured in the app shell.
+
+Operational scripts (e.g. creating dashboard users) belong with backend tooling — keep **service role** keys out of the Vite `.env`; use them only in trusted server-side scripts or Edge Functions.

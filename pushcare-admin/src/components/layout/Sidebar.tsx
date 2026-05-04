@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { compact } from "@/lib/format";
+import { useAuth } from "@/context/AuthContext";
 import { usePushcare } from "@/context/PushcareDataContext";
 import type { AndroidApp } from "@/lib/mock-data";
 
@@ -40,22 +41,26 @@ const SECTIONS: Array<{
 
 export function Sidebar({ onSignOut, onClose }: { onSignOut: () => void; onClose?: () => void }) {
   const navigate = useNavigate();
-  const { apps } = usePushcare();
+  const { session } = useAuth();
+  const { apps, loading, error, refresh, dataSource, apiBaseUrl } = usePushcare();
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [activeApp, setActiveApp] = useState<AndroidApp | null>(null);
 
   useEffect(() => {
-    if (!apps.length) return;
+    if (!apps.length) {
+      setActiveApp(null);
+      return;
+    }
     setActiveApp((prev) => (prev && apps.some((a) => a.id === prev.id) ? prev : apps[0]!));
   }, [apps]);
 
-  if (!activeApp) {
-    return (
-      <aside className="flex h-full w-full flex-col bg-ink-1 px-5 py-6 text-bone-mid">
-        <div className="font-mono text-[11px]">Loading apps…</div>
-      </aside>
-    );
-  }
+  const displayApp =
+    activeApp && apps.some((a) => a.id === activeApp.id) ? activeApp : apps[0] ?? null;
+
+  const sessionEmail = session?.user?.email ?? "Signed in";
+  const sessionInitial = sessionEmail.slice(0, 1).toUpperCase();
+
+  const loadingWorkspace = loading && apps.length === 0 && !error;
 
   return (
     <aside className="flex h-full w-full flex-col bg-ink-1 text-bone">
@@ -82,57 +87,119 @@ export function Sidebar({ onSignOut, onClose }: { onSignOut: () => void; onClose
         )}
       </div>
 
+      {loadingWorkspace && (
+        <div className="px-5 pb-3 font-mono text-[11px] text-bone-mid">Loading workspace…</div>
+      )}
+
+      {error && apps.length === 0 && (
+        <div className="mx-3 mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
+          <div className="font-medium">Could not load apps</div>
+          <div className="mt-1 text-[11px] opacity-90">{error}</div>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="mt-2 rounded-md bg-ink-3 px-2 py-1 font-mono text-[11px] text-bone hover:bg-ink-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* App switcher */}
       <div className="px-3 pb-3">
-        <button
-          type="button"
-          onClick={() => setAppPickerOpen((v) => !v)}
-          className="flex w-full items-center gap-2.5 rounded-lg border border-line-1 bg-ink-2/60 px-2.5 py-2 text-left transition hover:border-line-2 hover:bg-ink-3"
-        >
-          <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-md bg-gradient-to-br font-mono text-[12px] font-medium text-bone", activeApp.icon_color)}>
-            {activeApp.icon_glyph}
+        {!displayApp ? (
+          <div className="rounded-lg border border-line-1 bg-ink-2/60 px-2.5 py-2 text-[12px] text-bone-mid leading-snug">
+            {loadingWorkspace ? (
+              <span className="font-mono text-[11px] text-bone-low">Fetching apps…</span>
+            ) : error ? (
+              <span className="text-bone-low">Fix the error above or check API / CORS.</span>
+            ) : (
+              <>
+                <span>No apps in this workspace.</span>
+                <div className="mt-1 font-mono text-[10px] text-bone-low">
+                  Source: <span className="text-bone-mid">{dataSource}</span>
+                  {apiBaseUrl ? (
+                    <>
+                      {" · "}
+                      <span className="break-all">{apiBaseUrl}</span>
+                    </>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-medium leading-tight">{activeApp.name}</div>
-            <div className="truncate font-mono text-[10px] leading-tight text-bone-low">{activeApp.package_name}</div>
-          </div>
-          <Icon.ChevronDown size={14} className={cn("shrink-0 text-bone-low transition", appPickerOpen && "rotate-180")} />
-        </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setAppPickerOpen((v) => !v)}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-line-1 bg-ink-2/60 px-2.5 py-2 text-left transition hover:border-line-2 hover:bg-ink-3"
+            >
+              <div
+                className={cn(
+                  "grid h-9 w-9 shrink-0 place-items-center rounded-md bg-gradient-to-br font-mono text-[12px] font-medium text-bone",
+                  displayApp.icon_color,
+                )}
+              >
+                {displayApp.icon_glyph}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium leading-tight">{displayApp.name}</div>
+                <div className="truncate font-mono text-[10px] leading-tight text-bone-low">
+                  {displayApp.package_name}
+                </div>
+              </div>
+              <Icon.ChevronDown
+                size={14}
+                className={cn("shrink-0 text-bone-low transition", appPickerOpen && "rotate-180")}
+              />
+            </button>
 
-        {appPickerOpen && (
-          <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-line-1 bg-ink-2 p-1 shadow-raise animate-fade-in">
-            {apps.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => {
-                  setActiveApp(a);
-                  setAppPickerOpen(false);
-                  navigate(`/apps/${a.id}`);
-                  onClose?.();
-                }}
-                className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-ink-3"
-              >
-                <div className={cn("grid h-7 w-7 place-items-center rounded bg-gradient-to-br font-mono text-[10px] font-medium text-bone", a.icon_color)}>
-                  {a.icon_glyph}
+            {appPickerOpen && (
+              <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-line-1 bg-ink-2 p-1 shadow-raise animate-fade-in">
+                {apps.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveApp(a);
+                      setAppPickerOpen(false);
+                      navigate(`/apps/${a.id}`);
+                      onClose?.();
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-ink-3"
+                  >
+                    <div
+                      className={cn(
+                        "grid h-7 w-7 place-items-center rounded bg-gradient-to-br font-mono text-[10px] font-medium text-bone",
+                        a.icon_color,
+                      )}
+                    >
+                      {a.icon_glyph}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] font-medium">{a.name}</div>
+                      <div className="font-mono text-[10px] text-bone-low">{compact(a.live_users)} live</div>
+                    </div>
+                    {a.id === displayApp.id && <Icon.Check size={14} className="text-signal" />}
+                  </button>
+                ))}
+                <div className="mt-1 border-t border-line-1 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAppPickerOpen(false);
+                      navigate("/apps");
+                      onClose?.();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-[12px] text-bone-mid hover:bg-ink-3"
+                  >
+                    <Icon.Layers size={14} /> View all apps
+                  </button>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] font-medium">{a.name}</div>
-                  <div className="font-mono text-[10px] text-bone-low">{compact(a.live_users)} live</div>
-                </div>
-                {a.id === activeApp.id && <Icon.Check size={14} className="text-signal" />}
-              </button>
-            ))}
-            <div className="mt-1 border-t border-line-1 pt-1">
-              <button
-                type="button"
-                onClick={() => { setAppPickerOpen(false); navigate("/apps"); onClose?.(); }}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-[12px] text-bone-mid hover:bg-ink-3"
-              >
-                <Icon.Layers size={14} /> View all apps
-              </button>
-            </div>
-          </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -193,11 +260,11 @@ export function Sidebar({ onSignOut, onClose }: { onSignOut: () => void; onClose
         </NavLink>
         <div className="flex items-center gap-2.5 rounded-md border border-line-1 bg-ink-2/60 p-2.5">
           <div className="grid h-8 w-8 place-items-center rounded-full bg-bone text-ink-0 font-display font-semibold">
-            A
+            {sessionInitial}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-medium">Abdullah Babu</div>
-            <div className="truncate font-mono text-[10px] text-bone-low">abdullah@pushcare.io</div>
+            <div className="truncate text-[12px] font-medium">Account</div>
+            <div className="truncate font-mono text-[10px] text-bone-low">{sessionEmail}</div>
           </div>
           <button
             type="button"

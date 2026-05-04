@@ -20,7 +20,7 @@ export function Subscribers() {
   const { appId } = useParams();
   const { findApp } = usePushcare();
   const app = findApp(appId);
-  const all = useSubscribers(app?.id, 240);
+  const { data: all, error: collectionError, loading: collectionLoading, refetch } = useSubscribers(app?.id, 240);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | "valid" | "invalid">("all");
   const [page, setPage] = useState(1);
@@ -93,6 +93,18 @@ export function Subscribers() {
         }
       />
 
+      {collectionError && (
+        <div
+          role="alert"
+          className="mb-5 flex flex-col gap-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 sm:flex-row sm:items-center"
+        >
+          <p className="flex-1 text-[13px] text-danger">{collectionError}</p>
+          <Button variant="secondary" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
+
       <div className="mb-5 grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat label="Total subscribers" value={commas(all.length)} />
         <Stat label="Valid tokens" value={commas(validCount)} hint="reachable" />
@@ -125,7 +137,24 @@ export function Subscribers() {
       <Card>
         <CardHeader title={`${commas(filtered.length)} results`} />
         <CardBody padded={false}>
-          <Table rows={paged} columns={columns} rowKey={(s) => s.id} />
+          <Table
+            rows={paged}
+            columns={columns}
+            rowKey={(s) => s.id}
+            emptyState={
+              collectionLoading && all.length === 0 ? (
+                <div className="p-8 text-center text-[13px] text-bone-mid">Loading subscribers…</div>
+              ) : (
+                <div className="p-5">
+                  <EmptyState
+                    icon={<Icon.Key size={18} />}
+                    title="No subscribers match"
+                    description="Adjust search or filters to see more rows."
+                  />
+                </div>
+              )
+            }
+          />
         </CardBody>
         <CardFooter>
           <div className="font-mono text-[11px] text-bone-low">{(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {commas(filtered.length)}</div>

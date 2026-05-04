@@ -21,7 +21,12 @@ export function AppDetail() {
   const { findApp, campaigns } = usePushcare();
   const app = findApp(appId);
   const overview = useAnalyticsOverview(appId ?? "app-detail");
-  const devicesPreview = useDevices(app?.id, 12);
+  const {
+    data: devicesPreview,
+    error: devicesPreviewError,
+    loading: devicesPreviewLoading,
+    refetch: refetchDevicesPreview,
+  } = useDevices(app?.id, 12);
   const [tab, setTab] = useState("overview");
 
   if (!app) {
@@ -195,6 +200,17 @@ export function AppDetail() {
             }
           />
           <CardBody padded={false}>
+            {devicesPreviewError && (
+              <div
+                role="alert"
+                className="mx-5 mt-4 flex flex-col gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <p className="text-[12px] text-danger">{devicesPreviewError}</p>
+                <Button variant="ghost" size="sm" onClick={() => refetchDevicesPreview()}>
+                  Retry
+                </Button>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-[13px]">
                 <thead>
@@ -207,7 +223,14 @@ export function AppDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {devices.map((d) => (
+                  {devicesPreviewLoading && devices.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-5 py-10 text-center text-[13px] text-bone-mid">
+                        Loading devices…
+                      </td>
+                    </tr>
+                  ) : (
+                    devices.map((d) => (
                     <tr key={d.id} className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-3">
@@ -232,7 +255,8 @@ export function AppDetail() {
                         </span>
                       </td>
                     </tr>
-                  ))}
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

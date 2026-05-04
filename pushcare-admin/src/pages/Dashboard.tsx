@@ -1,28 +1,37 @@
 import { Link } from "react-router-dom";
-import { PageHeader, SectionTitle } from "@/components/ui/PageHeader";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
 import { AreaChart } from "@/components/charts/AreaChart";
 import { Sparkline, DonutChart, BarChart } from "@/components/charts/MiniCharts";
-import { Badge, StatusPill } from "@/components/ui/Badge";
+import { StatusPill } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/lib/icons";
-import { compact, commas, dateTime, pct, relTime } from "@/lib/format";
+import { compact, dateTime, pct, relTime } from "@/lib/format";
 import { dailyInstalls } from "@/lib/mock-data";
 import { Tabs } from "@/components/ui/Tabs";
 import { useState } from "react";
 import { usePushcare } from "@/context/PushcareDataContext";
 import { useAnalyticsOverview } from "@/hooks/useAnalyticsOverview";
+import { DashboardSkeleton } from "@/components/ui/Skeleton";
+import { pushcareApiHostname } from "@/lib/config";
 
 export function Dashboard() {
   const [range, setRange] = useState("7d");
-  const { apps, campaigns, loading, error } = usePushcare();
+  const { apps, campaigns, loading, error, dataSource } = usePushcare();
   const overview = useAnalyticsOverview("global-" + range);
   const days = range === "90d" ? 90 : range === "30d" ? 30 : 7;
   const installs = overview.dailyInstalls.slice(-Math.min(days, overview.dailyInstalls.length));
   const hb = overview.hourlyHeartbeats;
   const geo = overview.geoBreakdown;
   const events = overview.recentEvents.slice(0, 8);
+
+  const sourceEyebrow =
+    dataSource === "rest"
+      ? `REST · ${pushcareApiHostname() || "API"}`
+      : dataSource === "supabase"
+        ? "SUPABASE · RLS"
+        : "MOCK · DEMO";
 
   const totals = apps.reduce(
     (s, a) => ({
@@ -36,17 +45,29 @@ export function Dashboard() {
 
   const recentSent = campaigns.filter((c) => c.status === "sent" || c.status === "dispatching" || c.status === "scheduled").slice(0, 5);
 
+  if (loading && apps.length === 0 && !error) {
+    return <DashboardSkeleton />;
+  }
+
   return (
     <>
-      {error && (
-        <div className="mb-4 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-[13px] text-bone">
-          {error}
-        </div>
-      )}
       <PageHeader
-        eyebrow={<span className="flex items-center gap-1.5"><span className="live-dot" />{loading ? "Loading…" : "LIVE"}</span>}
+        eyebrow={
+          <span className="flex items-center gap-1.5">
+            <span className="live-dot" />
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-bone-low">{sourceEyebrow}</span>
+            <span className="text-bone-mid">·</span>
+            <span>{loading ? "Syncing…" : "Live"}</span>
+          </span>
+        }
         title="Mission control"
-        description="Realtime view of every app you operate. Connect VITE_PUSHCARE_API_URL for real backend data."
+        description={
+          dataSource === "rest"
+            ? "Operational telemetry from your PushCare REST API. JWT forwarded when you use Supabase sign-in."
+            : dataSource === "supabase"
+              ? "Tenant-scoped data from Supabase Postgres (RLS)."
+              : "Preview dataset — configure API or Supabase for production."
+        }
         actions={
           <>
             <Tabs

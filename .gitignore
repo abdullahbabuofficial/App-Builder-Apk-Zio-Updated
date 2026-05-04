@@ -1,0 +1,7 @@
+# Large local artifacts — do not publish to GitHub
+pushcare-deploy.tar.gz
+*.tar.gz
+
+# Local env (if added at repo root)
+.env
+.env.local

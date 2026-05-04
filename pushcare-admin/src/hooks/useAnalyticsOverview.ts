@@ -5,7 +5,8 @@ import { dailyInstalls, geoBreakdown, hourlyHeartbeats, recentEvents } from "@/l
 import type { AnalyticsOverview } from "@/lib/api";
 
 export function useAnalyticsOverview(seed = "global") {
-  const { useLiveApi } = usePushcare();
+  const { useLiveApi, dataSource } = usePushcare();
+  const restAnalytics = dataSource === "rest";
   const [data, setData] = useState<AnalyticsOverview>(() =>
     useLiveApi
       ? {
@@ -32,14 +33,34 @@ export function useAnalyticsOverview(seed = "global") {
       });
       return;
     }
+    if (!restAnalytics) {
+      setData({
+        dailyInstalls: [],
+        hourlyHeartbeats: [],
+        geoBreakdown: [],
+        recentEvents: [],
+      });
+      return;
+    }
     let cancelled = false;
-    api.fetchAnalyticsOverview(seed).then((d) => {
-      if (!cancelled) setData(d);
-    });
+    api
+      .fetchAnalyticsOverview(seed)
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setData({
+            dailyInstalls: [],
+            hourlyHeartbeats: [],
+            geoBreakdown: [],
+            recentEvents: [],
+          });
+      });
     return () => {
       cancelled = true;
     };
-  }, [useLiveApi, seed]);
+  }, [useLiveApi, restAnalytics, seed]);
 
   return data;
 }

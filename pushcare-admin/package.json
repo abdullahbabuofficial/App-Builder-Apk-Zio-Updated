@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc -b --noEmit"
+    "lint": "tsc -b --noEmit",
+    "create-dashboard-user": "node scripts/create-dashboard-user.mjs",
+    "verify-login": "node scripts/verify-supabase-login.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

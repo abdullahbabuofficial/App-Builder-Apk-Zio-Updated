@@ -179,6 +179,17 @@ export function PushcareProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (dataSource === "rest") {
+      api.setPushcareRestAccessToken(session?.access_token ?? null);
+    } else {
+      api.setPushcareRestAccessToken(null);
+    }
+    return () => {
+      api.setPushcareRestAccessToken(null);
+    };
+  }, [dataSource, session?.access_token]);
+
   const createCampaign = useCallback(
     async (input: api.CreateCampaignInput & { recipients_hint?: number }) => {
       if (dataSource === "mock") {

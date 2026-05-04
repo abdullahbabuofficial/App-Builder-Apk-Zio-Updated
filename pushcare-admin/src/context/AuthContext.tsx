@@ -33,10 +33,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!supabaseBrowser) return;
 
-    void supabaseBrowser.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
-    });
+    void supabaseBrowser.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(data.session);
+      })
+      .catch(() => {
+        setSession(null);
+      })
+      .finally(() => {
+        setReady(true);
+      });
 
     const {
       data: { subscription },
@@ -51,7 +58,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithPassword = useCallback(async (email: string, password: string) => {
     if (!supabaseBrowser) throw new Error("Supabase is not configured");
-    const { error } = await supabaseBrowser.auth.signInWithPassword({ email, password });
+    const { error } = await supabaseBrowser.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    });
     if (error) throw error;
   }, []);
 

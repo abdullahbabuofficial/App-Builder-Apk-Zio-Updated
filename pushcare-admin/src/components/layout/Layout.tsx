@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
+import { WorkspaceBanner } from "./WorkspaceBanner";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 
@@ -22,6 +23,12 @@ export function Layout() {
 
   return (
     <div className="relative min-h-screen text-bone">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:border focus:border-line-2 focus:bg-ink-2 focus:px-4 focus:py-2 focus:text-[13px] focus:font-medium focus:text-bone focus:outline-none focus:ring-2 focus:ring-signal/25"
+      >
+        Skip to main content
+      </a>
       {/* Desktop: fixed sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] border-r border-line-1 bg-ink-1 lg:block">
         <Sidebar onSignOut={() => void signOut()} />
@@ -53,7 +60,8 @@ export function Layout() {
       {/* Main column */}
       <div className="lg:pl-[248px]">
         <Topbar onMenu={() => setDrawerOpen(true)} />
-        <main className="px-4 pb-16 pt-6 sm:px-6 sm:pt-8 lg:px-10">
+        <WorkspaceBanner />
+        <main id="main-content" tabIndex={-1} className="px-4 pb-16 pt-6 outline-none sm:px-6 sm:pt-8 lg:px-10">
           <Outlet />
         </main>
       </div>

@@ -1,9 +1,12 @@
 import { useNavigate } from "react-router-dom";
 import { Icon } from "@/lib/icons";
 import { cn } from "@/lib/utils";
+import { usePushcare } from "@/context/PushcareDataContext";
+import { pushcareApiHostname } from "@/lib/config";
 
 export function Topbar({ onMenu }: { onMenu: () => void }) {
   const navigate = useNavigate();
+  const { dataSource, loading } = usePushcare();
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line-1 bg-ink-1/85 px-4 backdrop-blur-md sm:h-[60px] sm:px-6">
       <button
@@ -29,7 +32,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2">
-        <EnvBadge />
+        <EnvBadge dataSource={dataSource} loading={loading} />
         <IconBtn label="Notifications" icon="Bell" hasDot />
         <IconBtn label="Documentation" icon="External" />
         <button
@@ -69,11 +72,32 @@ function IconBtn({ label, icon, hasDot }: { label: string; icon: keyof typeof Ic
   );
 }
 
-function EnvBadge() {
+function EnvBadge({
+  dataSource,
+  loading,
+}: {
+  dataSource: string;
+  loading: boolean;
+}) {
+  const label =
+    dataSource === "rest" ? "REST" : dataSource === "supabase" ? "SUPABASE" : dataSource === "mock" ? "MOCK" : dataSource.toUpperCase();
+  const host = dataSource === "rest" ? pushcareApiHostname() : null;
+
   return (
-    <div className="hidden h-7 items-center gap-1.5 rounded-md border border-line-1 bg-ink-2/60 px-2 sm:inline-flex">
-      <span className="h-1.5 w-1.5 rounded-full bg-signal" />
-      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-bone-mid">production</span>
+    <div
+      className="hidden max-w-[220px] h-7 items-center gap-1.5 rounded-md border border-line-1 bg-ink-2/60 px-2 sm:inline-flex"
+      title={host || undefined}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          loading ? "animate-pulse bg-bone-low" : "bg-signal",
+        )}
+      />
+      <span className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-bone-mid">
+        {label}
+        {host ? ` · ${host}` : ""}
+      </span>
     </div>
   );
 }

@@ -22,7 +22,7 @@ export function Devices() {
   const { appId } = useParams();
   const { findApp } = usePushcare();
   const app = findApp(appId);
-  const all = useDevices(app?.id, 240);
+  const { data: all, error: collectionError, loading: collectionLoading, refetch } = useDevices(app?.id, 240);
   const [q, setQ] = useState("");
   const [country, setCountry] = useState("all");
   const [active, setActive] = useState<"all" | "active" | "inactive">("all");
@@ -110,6 +110,18 @@ export function Devices() {
         }
       />
 
+      {collectionError && (
+        <div
+          role="alert"
+          className="mb-5 flex flex-col gap-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 sm:flex-row sm:items-center"
+        >
+          <p className="flex-1 text-[13px] text-danger">{collectionError}</p>
+          <Button variant="secondary" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
+
       <Card className="mb-5">
         <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-[1fr_auto_auto] md:items-center">
           <Input
@@ -147,7 +159,15 @@ export function Devices() {
             rows={paged}
             columns={columns}
             rowKey={(d) => d.id}
-            emptyState={<div className="p-5"><EmptyState icon={<Icon.Phone size={18} />} title="No matches" description="Try widening your filters." /></div>}
+            emptyState={
+              collectionLoading && all.length === 0 ? (
+                <div className="p-8 text-center text-[13px] text-bone-mid">Loading devices…</div>
+              ) : (
+                <div className="p-5">
+                  <EmptyState icon={<Icon.Phone size={18} />} title="No matches" description="Try widening your filters." />
+                </div>
+              )
+            }
           />
         </CardBody>
         <CardFooter>
