@@ -161,5 +161,5 @@ CREATE POLICY daily_stats_owner ON app_daily_stats
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_daily_stats.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));

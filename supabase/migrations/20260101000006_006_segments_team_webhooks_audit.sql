@@ -411,7 +411,7 @@ AS $$
   SELECT p.code, p.monthly_pushes, p.max_apps, p.max_seats
     FROM org_subscriptions s
     JOIN subscription_plans p ON p.plan_id = s.plan_id
-   WHERE s.owner_id = current_owner_id();
+   WHERE s.owner_id = (SELECT current_owner_id());
 $$;
 
 -- ---------------------------------------------------------------------
@@ -457,24 +457,24 @@ ALTER TABLE subscription_plans   FORCE ROW LEVEL SECURITY;
 -- ---------------------------------------------------------------------
 CREATE POLICY segments_owner_all ON app_segments
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- org_members  — owner-scoped CRUD.
 -- ---------------------------------------------------------------------
 CREATE POLICY org_members_owner_all ON org_members
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- org_invites  — owner-scoped CRUD.
 -- ---------------------------------------------------------------------
 CREATE POLICY org_invites_owner_all ON org_invites
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- webhook_endpoints  — owner-scoped CRUD. The signing_secret bytea is
@@ -483,8 +483,8 @@ CREATE POLICY org_invites_owner_all ON org_invites
 -- ---------------------------------------------------------------------
 CREATE POLICY webhook_endpoints_owner_all ON webhook_endpoints
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- webhook_deliveries  — SELECT only, gated by JOIN to the endpoint's
@@ -496,7 +496,7 @@ CREATE POLICY webhook_deliveries_by_endpoint ON webhook_deliveries
   USING (EXISTS (
     SELECT 1 FROM webhook_endpoints e
      WHERE e.endpoint_id = webhook_deliveries.endpoint_id
-       AND e.owner_id = current_owner_id()
+       AND e.owner_id = (SELECT current_owner_id())
   ));
 
 -- ---------------------------------------------------------------------
@@ -505,7 +505,7 @@ CREATE POLICY webhook_deliveries_by_endpoint ON webhook_deliveries
 -- ---------------------------------------------------------------------
 CREATE POLICY audit_log_owner_select ON audit_log
   FOR SELECT TO authenticated
-  USING (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- subscription_plans  — public read of public rows. No write policy ⇒
@@ -520,16 +520,16 @@ CREATE POLICY subscription_plans_public_read ON subscription_plans
 -- ---------------------------------------------------------------------
 CREATE POLICY org_subscriptions_owner_all ON org_subscriptions
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- ---------------------------------------------------------------------
 -- usage_counters  — owner-scoped CRUD.
 -- ---------------------------------------------------------------------
 CREATE POLICY usage_counters_owner_all ON usage_counters
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- =====================================================================
 -- Redacted views  (mirror v_my_apps / v_subscriber_status pattern in 004)
@@ -542,7 +542,7 @@ CREATE OR REPLACE VIEW v_my_team AS
   SELECT org_member_id, owner_id, member_user_id, member_email,
          role, invited_by, accepted_at, created_at, updated_at
     FROM org_members
-   WHERE owner_id = current_owner_id();
+   WHERE owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_my_team TO authenticated;
 
@@ -557,7 +557,7 @@ CREATE OR REPLACE VIEW v_my_webhooks AS
          last_delivery_at, last_status, description,
          created_at, updated_at
     FROM webhook_endpoints
-   WHERE owner_id = current_owner_id();
+   WHERE owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_my_webhooks TO authenticated;
 
@@ -574,7 +574,7 @@ CREATE OR REPLACE VIEW v_my_subscription AS
          p.monthly_price_usd, p.features
     FROM org_subscriptions s
     JOIN subscription_plans p ON p.plan_id = s.plan_id
-   WHERE s.owner_id = current_owner_id();
+   WHERE s.owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_my_subscription TO authenticated;
 
