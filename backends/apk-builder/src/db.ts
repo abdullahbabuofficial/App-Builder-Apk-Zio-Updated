@@ -61,13 +61,16 @@ export async function claimNextBuild(): Promise<ClaimedBuild | null> {
 }
 
 // ---------------------------------------------------------------------
-// Mark a build as succeeded with the resulting APK metadata.
+// Mark a build as succeeded with the resulting APK metadata. `buildLogUrl`
+// is the storage URL of the captured build log (uploaded by the dispatcher
+// before this call).
 // ---------------------------------------------------------------------
 export async function markBuildSucceeded(
   buildId: string,
   apkUrl: string,
   apkSizeBytes: number,
   apkSha256: string,
+  buildLogUrl: string | null = null,
 ): Promise<void> {
   await db.query(
     `UPDATE apk_builds
@@ -75,25 +78,29 @@ export async function markBuildSucceeded(
             apk_url        = $2,
             apk_size_bytes = $3,
             apk_sha256     = $4,
+            build_log_url  = COALESCE($5, build_log_url),
             completed_at   = NOW()
       WHERE build_id = $1`,
-    [buildId, apkUrl, apkSizeBytes, apkSha256],
+    [buildId, apkUrl, apkSizeBytes, apkSha256, buildLogUrl],
   );
 }
 
 // ---------------------------------------------------------------------
-// Mark a build as failed with the error message captured.
+// Mark a build as failed. We persist the error message AND the log URL
+// (when available) so support can pull the full output from storage.
 // ---------------------------------------------------------------------
 export async function markBuildFailed(
   buildId: string,
   errorMessage: string,
+  buildLogUrl: string | null = null,
 ): Promise<void> {
   await db.query(
     `UPDATE apk_builds
-        SET build_status = 'failed',
-            error_message = $2,
-            completed_at  = NOW()
+        SET build_status   = 'failed',
+            error_message  = $2,
+            build_log_url  = COALESCE($3, build_log_url),
+            completed_at   = NOW()
       WHERE build_id = $1`,
-    [buildId, errorMessage],
+    [buildId, errorMessage, buildLogUrl],
   );
 }

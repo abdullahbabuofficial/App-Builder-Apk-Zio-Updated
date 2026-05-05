@@ -103,7 +103,19 @@ app.post("/api/campaigns", (req, res) => {
 
 app.get("/api/api-keys", (_req, res) => ok(res, { ok: true, api_keys: store.apiKeys }));
 
-app.get("/api/builds", (_req, res) => ok(res, { ok: true, builds: store.builds }));
+app.get("/api/builds", (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status : null;
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : null;
+  let builds = store.builds.slice();
+  if (status) {
+    // Worker uses "queued"; Postgres column uses "pending" — accept both.
+    const want = status === "pending" ? "queued" : status;
+    builds = builds.filter((b) => b.status === want);
+  }
+  if (limit) builds = builds.slice(0, limit);
+  ok(res, { ok: true, builds });
+});
 
 app.get("/api/analytics/overview", (req, res) => {
   const seed = typeof req.query.seed === "string" ? req.query.seed : "global";
@@ -801,6 +813,65 @@ app.get("/api/builds/:id", (req, res) => {
   if (!isUuid(req.params.id)) return err(res, "invalid_request", "id must be a UUID", 400);
   const build = store.builds.find((b) => b.id === req.params.id);
   if (!build) return err(res, "not_found", "Build not found", 404);
+  ok(res, { ok: true, build });
+});
+
+// Worker calls this to claim a queued build → "building". No auth in dev;
+// production routes through Postgres + service_role + RLS.
+app.patch("/api/builds/:id", (req, res) => {
+  if (!isUuid(req.params.id)) return err(res, "invalid_request", "id must be a UUID", 400);
+  const build = store.builds.find((b) => b.id === req.params.id);
+  if (!build) return err(res, "not_found", "Build not found", 404);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const next = typeof b.status === "string" ? b.status : null;
+  if (next && (next === "queued" || next === "building" || next === "success" || next === "failed")) {
+    build.status = next;
+    if (next === "building" && !build.build_started_at) {
+      build.build_started_at = new Date().toISOString();
+    }
+  }
+  ok(res, { ok: true, build });
+});
+
+// Worker posts the final outcome here. We accept apk metadata, error
+// message, and the captured build log, then derive status/duration.
+app.post("/api/builds/:id/result", (req, res) => {
+  if (!isUuid(req.params.id)) return err(res, "invalid_request", "id must be a UUID", 400);
+  const build = store.builds.find((b) => b.id === req.params.id);
+  if (!build) return err(res, "not_found", "Build not found", 404);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const status = typeof b.status === "string" ? b.status : null;
+  if (status === "succeeded" || status === "success") {
+    build.status = "success";
+    if (typeof b.apk_url === "string") build.output_url = b.apk_url;
+    if (typeof b.apk_size_bytes === "number") build.size_bytes = b.apk_size_bytes;
+    if (typeof b.apk_sha256 === "string") build.apk_sha256 = b.apk_sha256;
+    build.error_message = null;
+  } else if (status === "failed") {
+    build.status = "failed";
+    if (typeof b.error_message === "string") build.error_message = b.error_message;
+  }
+  if (typeof b.build_log === "string") build.build_log = b.build_log;
+  build.build_completed_at = new Date().toISOString();
+  if (build.build_started_at && build.build_completed_at) {
+    build.duration_ms = Math.max(
+      0,
+      new Date(build.build_completed_at).getTime() - new Date(build.build_started_at).getTime(),
+    );
+  }
+  store.recordAudit({
+    actor_email: "system:apk-builder",
+    action: build.status === "success" ? "build.succeeded" : "build.failed",
+    target_type: "build",
+    target_id: build.id,
+    details: {
+      apk_url: build.output_url,
+      size_bytes: build.size_bytes,
+      sha256: build.apk_sha256,
+    },
+    ip: clientIp(req),
+    user_agent: clientUa(req),
+  });
   ok(res, { ok: true, build });
 });
 

@@ -106,6 +106,12 @@ export type ApkBuild = {
   triggered_by: string;
   branch?: string | null;
   release_notes?: string | null;
+  /** sha256 (hex) of the produced APK. */
+  apk_sha256?: string | null;
+  /** Captured build output (gradle stdout/stderr or simulated trace). */
+  build_log?: string | null;
+  /** Set when status === "failed". */
+  error_message?: string | null;
 };
 
 export type Segment = {

@@ -22,7 +22,7 @@ import {
 } from './api-client.js';
 import type { ClaimedBuild } from './db.js';
 import { buildApk } from './builder.js';
-import { uploadApk } from './storage.js';
+import { uploadApk, uploadBuildLog } from './storage.js';
 import { logger } from './logger.js';
 
 const WORKER_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 2);
@@ -102,22 +102,32 @@ async function workerLoop(slot: number): Promise<void> {
 // the artifact, record the result. Errors flow into markBuildFailed.
 // ---------------------------------------------------------------------
 async function dispatchBuild(claim: ClaimedBuild): Promise<void> {
+  let capturedLog = '';
   try {
     const result = await buildApk(claim, logger);
+    capturedLog = result.log;
     const url = await uploadApk(claim, result.apkPath);
     if (USE_POSTGRES) {
-      await markBuildSucceeded(claim.build_id, url, result.sizeBytes, result.sha256);
+      // Postgres mode: write the log to object storage and persist its URL.
+      const logUrl = await uploadBuildLog(claim, capturedLog);
+      await markBuildSucceeded(claim.build_id, url, result.sizeBytes, result.sha256, logUrl);
     } else if (USE_LOCAL_API) {
-      await apiMarkSucceeded(claim.build_id, url, result.sizeBytes, result.sha256);
+      // Local-API mode: send the log inline so the in-memory store can
+      // surface it directly (no object storage in dev).
+      await apiMarkSucceeded(claim.build_id, url, result.sizeBytes, result.sha256, capturedLog);
     }
     logger.info({ build_id: claim.build_id, url }, 'build_succeeded');
   } catch (err) {
     logger.error({ err, build_id: claim.build_id }, 'build_failed');
     const msg = (err as Error).message ?? 'unknown_error';
+    // Best-effort log capture even on failure: the error message often
+    // contains the gradle log tail that builder.ts attached.
+    if (!capturedLog && msg) capturedLog = msg;
     if (USE_POSTGRES) {
-      await markBuildFailed(claim.build_id, msg);
+      const logUrl = await uploadBuildLog(claim, capturedLog);
+      await markBuildFailed(claim.build_id, msg, logUrl);
     } else if (USE_LOCAL_API) {
-      await apiMarkFailed(claim.build_id, msg);
+      await apiMarkFailed(claim.build_id, msg, capturedLog);
     }
   }
 }

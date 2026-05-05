@@ -86,3 +86,48 @@ export async function uploadApk(ctx: BuildContext, apkPath: string): Promise<str
   logger.info({ build_id: ctx.build_id, url }, 'storage_tmp_only');
   return url;
 }
+
+// ---------------------------------------------------------------------
+// Upload the captured build log so the dashboard can render the full
+// gradle output. Returns null when no upload destination is configured
+// (caller falls back to inline-in-DB or skip).
+// ---------------------------------------------------------------------
+export async function uploadBuildLog(
+  ctx: BuildContext,
+  log: string,
+): Promise<string | null> {
+  if (!log) return null;
+  const objectPath = `${ctx.app_id}/${ctx.version_code}/${ctx.build_id}.log`;
+
+  const client = getSupabase();
+  if (client) {
+    await ensureBucket(client);
+    const { error } = await client.storage
+      .from(BUCKET)
+      .upload(objectPath, log, {
+        contentType: 'text/plain; charset=utf-8',
+        upsert: true,
+      });
+    if (error) {
+      logger.warn({ err: error.message, build_id: ctx.build_id }, 'log_upload_failed');
+      return null;
+    }
+    const { data } = client.storage.from(BUCKET).getPublicUrl(objectPath);
+    return data.publicUrl;
+  }
+
+  if (OUTPUT_DIR) {
+    try {
+      const dir = path.join(OUTPUT_DIR, ctx.app_id, String(ctx.version_code));
+      await fsp.mkdir(dir, { recursive: true });
+      const dest = path.join(dir, `${ctx.build_id}.log`);
+      await fsp.writeFile(dest, log, 'utf8');
+      return `file://${dest}`;
+    } catch (err) {
+      logger.warn({ err, build_id: ctx.build_id }, 'log_write_failed');
+      return null;
+    }
+  }
+
+  return null;
+}

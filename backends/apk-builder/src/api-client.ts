@@ -93,25 +93,30 @@ export async function markBuildSucceeded(
   apkUrl: string,
   apkSizeBytes: number,
   apkSha256: string,
+  buildLog: string | null = null,
 ): Promise<void> {
   await postResult(buildId, {
     status: 'succeeded',
     apk_url: apkUrl,
     apk_size_bytes: apkSizeBytes,
     apk_sha256: apkSha256,
+    build_log: buildLog,
   });
 }
 
 // ---------------------------------------------------------------------
-// Post a failed build result.
+// Post a failed build result. The captured log goes inline so the local
+// dashboard can show it without needing object storage.
 // ---------------------------------------------------------------------
 export async function markBuildFailed(
   buildId: string,
   errorMessage: string,
+  buildLog: string | null = null,
 ): Promise<void> {
   await postResult(buildId, {
     status: 'failed',
     error_message: errorMessage,
+    build_log: buildLog,
   });
 }
 

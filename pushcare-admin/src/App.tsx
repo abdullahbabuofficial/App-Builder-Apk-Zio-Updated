@@ -22,6 +22,7 @@ import { NewCampaign } from "@/pages/NewCampaign";
 import { CampaignDetail } from "@/pages/CampaignDetail";
 import { Analytics } from "@/pages/Analytics";
 import { ApkBuilder } from "@/pages/ApkBuilder";
+import { BuildDetail } from "@/pages/BuildDetail";
 import { ApiKeys } from "@/pages/ApiKeys";
 import { Settings } from "@/pages/Settings";
 
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="/campaigns/:id" element={<CampaignDetail />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/builder" element={<ApkBuilder />} />
+        <Route path="/builder/:id" element={<BuildDetail />} />
         <Route path="/keys" element={<ApiKeys />} />
         <Route path="/settings" element={<Settings />} />
       </Route>

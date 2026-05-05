@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -19,6 +20,7 @@ import { isApiNotFound } from "@/lib/api";
 type StatusFilter = "all" | ApkBuild["status"];
 
 export function ApkBuilder() {
+  const navigate = useNavigate();
   const { builds, apps, appName, dataSource, refresh } = usePushcare();
   const live = dataSource !== "mock";
 
@@ -260,7 +262,8 @@ export function ApkBuilder() {
                   {filtered.map((b) => (
                     <tr
                       key={b.id}
-                      className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60"
+                      onClick={() => navigate(`/builder/${b.id}`)}
+                      className="cursor-pointer border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60"
                     >
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-3">
@@ -303,7 +306,7 @@ export function ApkBuilder() {
                       <td className="px-4 py-3 text-right">
                         <span className="text-bone-mid">{relTime(b.build_started_at)}</span>
                       </td>
-                      <td className="px-5 py-3 text-right">
+                      <td className="px-5 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                         {b.output_url ? (
                           <Button
                             variant="secondary"
@@ -318,14 +321,19 @@ export function ApkBuilder() {
                             variant="ghost"
                             size="sm"
                             leading={<Icon.Code size={12} />}
-                            disabled
-                            title="Logs view coming soon"
+                            onClick={() => navigate(`/builder/${b.id}`)}
+                            title="View build log"
                           >
                             Logs
                           </Button>
                         ) : (
-                          <Button variant="ghost" size="icon" aria-label="More" disabled>
-                            <Icon.More size={14} />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="View build"
+                            onClick={() => navigate(`/builder/${b.id}`)}
+                          >
+                            <Icon.ArrowRight size={14} />
                           </Button>
                         )}
                       </td>
