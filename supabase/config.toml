@@ -1,0 +1,88 @@
+# PushCare — Supabase CLI configuration.
+#
+# Reference: https://supabase.com/docs/reference/cli/config
+#
+# This file lets `supabase start`, `supabase db push`, and
+# `supabase functions deploy` all run from the repo root.
+
+# Used as project_id in Supabase Studio. Keep stable — changes here force
+# a full local-stack rebuild.
+project_id = "pushcare"
+
+[api]
+# PostgREST runs here when using the local stack.
+port = 54321
+# Schemas exposed to PostgREST. `public` is enough for now; everything
+# auth-sensitive lives behind RLS policies.
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+# Local Postgres port — picked to avoid clashes with a host Postgres.
+port = 54322
+shadow_port = 54320
+# Production runs Supabase Postgres 15. Keep local in sync to catch
+# version-specific SQL bugs early (partitioning, generated columns, etc).
+major_version = 15
+
+[studio]
+port = 54323
+
+[inbucket]
+port = 54324
+
+[storage]
+file_size_limit = "50MiB"
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://localhost:3000"]
+jwt_expiry = 3600
+enable_signup = true
+
+# ---------------------------------------------------------------------
+# Edge functions.
+#
+# Most SDK + server-to-server endpoints authenticate themselves
+# (X-PC-App-Key for SDK, sk_live_/sk_test_ for the dashboard backend).
+# Disabling Supabase's built-in JWT check on these is what lets the
+# Android SDK call them with only a public app key.
+#
+# `apps-stats`, `apk-build-trigger`, and `team-invite` are dashboard
+# calls — they pass the caller's Supabase JWT through to RLS, so we
+# require the JWT here.
+# ---------------------------------------------------------------------
+
+[functions.sdk-init]
+verify_jwt = false
+
+[functions.sdk-register-device]
+verify_jwt = false
+
+[functions.sdk-heartbeat]
+verify_jwt = false
+
+[functions.sdk-event]
+verify_jwt = false
+
+[functions.push-track]
+verify_jwt = false
+
+[functions.push-send]
+verify_jwt = false
+
+[functions.apps-stats]
+verify_jwt = true
+
+[functions.signup-init]
+verify_jwt = false
+
+[functions.webhook-deliver]
+verify_jwt = false
+
+[functions.apk-build-trigger]
+verify_jwt = true
+
+[functions.team-invite]
+verify_jwt = true

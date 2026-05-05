@@ -43,14 +43,15 @@ supabase link --project-ref <your-ref>
 supabase db push
 ```
 
-`supabase db push` runs the five migration files in order:
+`supabase db push` runs the six migration files in order (under `supabase/migrations/`):
 
 ```
-001_core_schema.sql        – tenant tables, install hashes, sharded counters
-002_partitioned_tables.sql – heartbeats / events / deliveries (RANGE by month)
-003_functions.sql          – SECURITY DEFINER RPCs called by edge fns + worker
-004_rls_policies.sql       – row-level security + redacted views
-005_views_and_cron.sql     – daily rollups + maintenance jobs
+20260101000001_001_core_schema.sql              – tenant tables, install hashes, sharded counters
+20260101000002_002_partitioned_tables.sql       – heartbeats / events / deliveries (RANGE by month)
+20260101000003_003_functions.sql                – SECURITY DEFINER RPCs called by edge fns + worker
+20260101000004_004_rls_policies.sql             – row-level security + redacted views
+20260101000005_005_views_and_cron.sql           – daily rollups + maintenance jobs
+20260101000006_006_segments_team_webhooks_audit.sql – segments / team / webhooks / audit / billing primitives
 ```
 
 Sanity check:
@@ -92,8 +93,14 @@ supabase functions deploy sdk-heartbeat        --no-verify-jwt
 supabase functions deploy sdk-event            --no-verify-jwt
 supabase functions deploy push-track           --no-verify-jwt
 supabase functions deploy push-send            --no-verify-jwt
+supabase functions deploy signup-init          --no-verify-jwt
+supabase functions deploy webhook-deliver      --no-verify-jwt
+supabase functions deploy apk-build-trigger    --no-verify-jwt
+supabase functions deploy team-invite          --no-verify-jwt
 supabase functions deploy apps-stats
 ```
+
+Or run `./deploy-supabase.sh` from the repo root, which links the project, applies migrations, and deploys all of the above.
 
 > The SDK functions use `--no-verify-jwt` because the Android SDK authenticates with `X-PC-App-Key`, not a Supabase JWT. `apps-stats` is the only one that **requires** a JWT — it relies on RLS for tenant isolation.
 

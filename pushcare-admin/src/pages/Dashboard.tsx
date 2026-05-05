@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
@@ -10,7 +10,7 @@ import { Icon } from "@/lib/icons";
 import { compact, dateTime, pct, relTime } from "@/lib/format";
 import { dailyInstalls } from "@/lib/mock-data";
 import { Tabs } from "@/components/ui/Tabs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePushcare } from "@/context/PushcareDataContext";
 import { useAnalyticsOverview } from "@/hooks/useAnalyticsOverview";
 import { DashboardSkeleton } from "@/components/ui/Skeleton";
@@ -18,7 +18,14 @@ import { pushcareApiHostname } from "@/lib/config";
 
 export function Dashboard() {
   const [range, setRange] = useState("7d");
+  const navigate = useNavigate();
   const { apps, campaigns, loading, error, dataSource } = usePushcare();
+
+  useEffect(() => {
+    if (!loading && !error && apps.length === 0 && dataSource !== "mock") {
+      navigate("/onboarding", { replace: true });
+    }
+  }, [loading, error, apps, dataSource, navigate]);
   const overview = useAnalyticsOverview("global-" + range);
   const days = range === "90d" ? 90 : range === "30d" ? 30 : 7;
   const installs = overview.dailyInstalls.slice(-Math.min(days, overview.dailyInstalls.length));

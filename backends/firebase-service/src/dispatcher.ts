@@ -73,6 +73,57 @@ async function sleep(ms: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------
+// Pure mapping: BatchResponse + token chunk → DeliveryResult[].
+// Exported so unit tests can exercise it without a real FCM client.
+// ---------------------------------------------------------------------
+export function mapBatchResponseToResults(
+  chunk: SubscriberRow[],
+  resp: BatchResponse,
+): DeliveryResult[] {
+  const out: DeliveryResult[] = [];
+  resp.responses.forEach((r, i) => {
+    const sub = chunk[i];
+    if (r.success) {
+      out.push({
+        subscriber_id:  sub.subscriber_id,
+        device_id:      sub.device_id,
+        status:         1, // sent
+        fcm_message_id: r.messageId ?? null,
+        error_code:     null,
+      });
+    } else {
+      const code = r.error?.code ?? 'unknown';
+      const isPermanent = PERMANENT_TOKEN_ERRORS.has(code);
+      out.push({
+        subscriber_id:  sub.subscriber_id,
+        device_id:      sub.device_id,
+        status:         isPermanent ? 6 : 5,  // token_invalid | failed
+        fcm_message_id: null,
+        error_code:     code,
+      });
+    }
+  });
+  return out;
+}
+
+// ---------------------------------------------------------------------
+// Build the failure-result payload for an exhausted batch — so tests
+// can verify how transient failures are surfaced.
+// ---------------------------------------------------------------------
+export function batchFailureResults(
+  chunk: SubscriberRow[],
+  errorCode: string,
+): DeliveryResult[] {
+  return chunk.map((sub) => ({
+    subscriber_id:  sub.subscriber_id,
+    device_id:      sub.device_id,
+    status:         5,
+    fcm_message_id: null,
+    error_code:     errorCode,
+  }));
+}
+
+// ---------------------------------------------------------------------
 // Send one batch of <=500 tokens. Returns DeliveryResult[] in lockstep
 // with the input chunk so the caller can record everything in one go.
 // ---------------------------------------------------------------------
@@ -90,30 +141,7 @@ async function sendOneBatch(
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const resp: BatchResponse = await messaging.sendEachForMulticast(message);
-      const out: DeliveryResult[] = [];
-      resp.responses.forEach((r, i) => {
-        const sub = chunk[i];
-        if (r.success) {
-          out.push({
-            subscriber_id:  sub.subscriber_id,
-            device_id:      sub.device_id,
-            status:         1, // sent
-            fcm_message_id: r.messageId ?? null,
-            error_code:     null,
-          });
-        } else {
-          const code = r.error?.code ?? 'unknown';
-          const isPermanent = PERMANENT_TOKEN_ERRORS.has(code);
-          out.push({
-            subscriber_id:  sub.subscriber_id,
-            device_id:      sub.device_id,
-            status:         isPermanent ? 6 : 5,  // token_invalid | failed
-            fcm_message_id: null,
-            error_code:     code,
-          });
-        }
-      });
-      return out;
+      return mapBatchResponseToResults(chunk, resp);
     } catch (err) {
       lastError = err;
       const code = (err as { code?: string }).code;
@@ -124,25 +152,12 @@ async function sendOneBatch(
         continue;
       }
       logger.error({ err, code }, 'fcm_batch_failed');
-      // Mark every token in this batch as failed.
-      return chunk.map((sub) => ({
-        subscriber_id:  sub.subscriber_id,
-        device_id:      sub.device_id,
-        status:         5,
-        fcm_message_id: null,
-        error_code:     code ?? 'batch_send_failed',
-      }));
+      return batchFailureResults(chunk, code ?? 'batch_send_failed');
     }
   }
   // Should be unreachable.
   logger.error({ err: lastError }, 'fcm_batch_exhausted');
-  return chunk.map((sub) => ({
-    subscriber_id: sub.subscriber_id,
-    device_id:     sub.device_id,
-    status:        5,
-    fcm_message_id: null,
-    error_code:    'exhausted_retries',
-  }));
+  return batchFailureResults(chunk, 'exhausted_retries');
 }
 
 // ---------------------------------------------------------------------

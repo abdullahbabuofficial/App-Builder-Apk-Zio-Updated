@@ -5,6 +5,7 @@ APP_DIR="/opt/pushcare"
 API_PORT="${API_PORT:-8787}"
 FRONTEND_HOST="${FRONTEND_HOST:-admin.pushcare.net}"
 API_HOST="${API_HOST:-api.pushcare.net}"
+SUBSCRIBER_HOST="${SUBSCRIBER_HOST:-subscribers.pushcare.net}"
 APACHE_VHOST_ADDR="${APACHE_VHOST_ADDR:-$(hostname -I | awk '{print $1}')}"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -34,6 +35,12 @@ cd "$APP_DIR/pushcare-admin"
 npm ci
 npm run build
 
+if [[ -d "$APP_DIR/pushcare-subscriber-portal" ]]; then
+  cd "$APP_DIR/pushcare-subscriber-portal"
+  npm ci
+  npm run build
+fi
+
 echo "[3/6] Installing API systemd service"
 cat >/etc/systemd/system/pushcare-api.service <<SERVICE
 [Unit]
@@ -62,8 +69,15 @@ mkdir -p /var/www/pushcare
 rm -rf /var/www/pushcare/*
 cp -a "$APP_DIR/pushcare-admin/dist/." /var/www/pushcare/
 
+if [[ -d "$APP_DIR/pushcare-subscriber-portal/dist" ]]; then
+  mkdir -p /var/www/pushcare-subscribers
+  rm -rf /var/www/pushcare-subscribers/*
+  cp -a "$APP_DIR/pushcare-subscriber-portal/dist/." /var/www/pushcare-subscribers/
+fi
+
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == "Enforcing" ]]; then
   command -v chcon >/dev/null 2>&1 && chcon -R -t httpd_sys_content_t /var/www/pushcare || true
+  command -v chcon >/dev/null 2>&1 && [[ -d /var/www/pushcare-subscribers ]] && chcon -R -t httpd_sys_content_t /var/www/pushcare-subscribers || true
   command -v setsebool >/dev/null 2>&1 && setsebool -P httpd_can_network_connect 1 || true
 fi
 
@@ -92,6 +106,21 @@ cat >/etc/apache2/conf.d/pushcare.conf <<APACHE
 
   ErrorLog logs/pushcare-web-error_log
   CustomLog logs/pushcare-web-access_log combined
+</VirtualHost>
+
+<VirtualHost $APACHE_VHOST_ADDR:80>
+  ServerName $SUBSCRIBER_HOST
+  DocumentRoot /var/www/pushcare-subscribers
+
+  <Directory /var/www/pushcare-subscribers>
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+    FallbackResource /index.html
+  </Directory>
+
+  ErrorLog logs/pushcare-subscribers-error_log
+  CustomLog logs/pushcare-subscribers-access_log combined
 </VirtualHost>
 APACHE
 

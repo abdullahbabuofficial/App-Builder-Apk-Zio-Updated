@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  firebase-service:
+    name: firebase-service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backends/firebase-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backends/firebase-service/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  local-api:
+    name: local-api
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backends/local-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # local-api may pick up new test devDeps (vitest, supertest); use install
+      # so the lockfile auto-updates rather than fails CI on a missing entry.
+      - run: npm install
+      - run: npm run build
+      - run: npm test
+
+  apk-builder:
+    name: apk-builder
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backends/apk-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run build
+
+  pushcare-admin:
+    name: pushcare-admin
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pushcare-admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  pushcare-subscriber-portal:
+    name: pushcare-subscriber-portal
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pushcare-subscriber-portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+
+  sql-lint:
+    name: sql-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanity-check SQL migration headers
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No SQL migrations found under supabase/migrations/"; exit 1
+          fi
+          for f in "${files[@]}"; do
+            if ! head -1 "$f" | grep -q '^--'; then
+              echo "Migration $f missing leading '--' header"
+              exit 1
+            fi
+            if [ ! -s "$f" ]; then
+              echo "Migration $f is empty"; exit 1
+            fi
+          done
+          echo "All ${#files[@]} migrations passed sanity check."

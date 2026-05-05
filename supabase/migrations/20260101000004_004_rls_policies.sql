@@ -20,7 +20,7 @@ CREATE OR REPLACE FUNCTION current_owner_id() RETURNS UUID
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  SELECT owner_id FROM app_owners WHERE auth_user_id = auth.uid();
+  SELECT owner_id FROM app_owners WHERE auth_user_id = (SELECT auth.uid());
 $$;
 
 GRANT EXECUTE ON FUNCTION current_owner_id() TO authenticated;
@@ -52,20 +52,20 @@ ALTER TABLE api_keys                FORCE ROW LEVEL SECURITY;
 -- ---------------------------------------------------------------------
 CREATE POLICY owner_self_select ON app_owners
   FOR SELECT TO authenticated
-  USING (auth_user_id = auth.uid());
+  USING (auth_user_id = (SELECT auth.uid()));
 
 CREATE POLICY owner_self_update ON app_owners
   FOR UPDATE TO authenticated
-  USING (auth_user_id = auth.uid())
-  WITH CHECK (auth_user_id = auth.uid());
+  USING (auth_user_id = (SELECT auth.uid()))
+  WITH CHECK (auth_user_id = (SELECT auth.uid()));
 
 -- ---------------------------------------------------------------------
 -- android_apps
 -- ---------------------------------------------------------------------
 CREATE POLICY apps_owner_all ON android_apps
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 -- We do NOT expose app_secret_hash to authenticated. Use a view instead.
 CREATE OR REPLACE VIEW v_my_apps AS
@@ -73,7 +73,7 @@ CREATE OR REPLACE VIEW v_my_apps AS
          status, total_installs, active_installs, total_uninstalls,
          live_users, counters_synced_at, metadata, created_at, updated_at
     FROM android_apps
-   WHERE owner_id = current_owner_id();
+   WHERE owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_my_apps TO authenticated;
 
@@ -86,7 +86,7 @@ CREATE POLICY devices_by_app ON app_devices
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_devices.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));
 
 -- Subscribers: never expose fcm_token directly. Use a redacted view.
@@ -101,7 +101,7 @@ CREATE OR REPLACE VIEW v_subscriber_status AS
          s.is_valid, s.invalid_reason, s.last_validated_at, s.created_at
     FROM app_subscribers s
     JOIN android_apps a ON a.app_id = s.app_id
-   WHERE a.owner_id = current_owner_id();
+   WHERE a.owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_subscriber_status TO authenticated;
 
@@ -110,7 +110,7 @@ CREATE POLICY heartbeats_by_app ON app_heartbeats
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_heartbeats.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));
 
 CREATE POLICY events_by_app ON app_analytics_events
@@ -118,7 +118,7 @@ CREATE POLICY events_by_app ON app_analytics_events
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_analytics_events.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));
 
 CREATE POLICY deliveries_by_app ON app_message_delivery
@@ -126,25 +126,25 @@ CREATE POLICY deliveries_by_app ON app_message_delivery
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_message_delivery.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));
 
 CREATE POLICY notifs_owner ON app_push_notifications
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 CREATE POLICY apk_builds_owner ON apk_builds
   FOR ALL TO authenticated
-  USING (owner_id = current_owner_id())
-  WITH CHECK (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()))
+  WITH CHECK (owner_id = (SELECT current_owner_id()));
 
 CREATE POLICY counter_shards_by_app ON app_counter_shards
   FOR SELECT TO authenticated
   USING (EXISTS (
     SELECT 1 FROM android_apps a
      WHERE a.app_id = app_counter_shards.app_id
-       AND a.owner_id = current_owner_id()
+       AND a.owner_id = (SELECT current_owner_id())
   ));
 
 -- ---------------------------------------------------------------------
@@ -152,13 +152,13 @@ CREATE POLICY counter_shards_by_app ON app_counter_shards
 -- ---------------------------------------------------------------------
 CREATE POLICY api_keys_owner ON api_keys
   FOR SELECT TO authenticated
-  USING (owner_id = current_owner_id());
+  USING (owner_id = (SELECT current_owner_id()));
 
 CREATE OR REPLACE VIEW v_my_api_keys AS
   SELECT key_id, app_id, key_prefix, scopes, rate_limit_rpm,
          is_active, last_used_at, created_at, expires_at
     FROM api_keys
-   WHERE owner_id = current_owner_id();
+   WHERE owner_id = (SELECT current_owner_id());
 
 GRANT SELECT ON v_my_api_keys TO authenticated;
 

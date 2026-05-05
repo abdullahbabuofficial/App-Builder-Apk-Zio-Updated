@@ -38,29 +38,52 @@ export function setPushcareRestAccessToken(token: string | null): void {
   restAccessToken = token;
 }
 
+/** Custom Error subclass that carries the HTTP status from a failed REST call. */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text();
   let data: unknown = {};
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`Invalid JSON (${res.status})`);
+    throw new ApiError(`Invalid JSON (${res.status})`, res.status);
   }
   if (!res.ok) {
     const msg =
       typeof data === "object" && data && "error" in data
         ? String((data as { error?: { message?: string } }).error?.message ?? res.statusText)
         : res.statusText;
-    throw new Error(msg);
+    throw new ApiError(msg || `Request failed (${res.status})`, res.status);
   }
   return data as T;
+}
+
+/** Exposed for sibling lib modules (lib/segments, lib/webhooks, …). */
+export { parseJson };
+
+/** True when a response means "endpoint not implemented" — used by REST helpers
+ * that gracefully fall back to mock-mode when the local-api hasn't shipped a
+ * route yet. */
+export function isApiNotFound(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status === 404 || err.status === 501;
+  if (!(err instanceof Error)) return false;
+  const m = err.message.toLowerCase();
+  return m.includes("404") || m.includes("not found") || m.includes("not implemented");
 }
 
 function apiPath(path: string): string {
   return `${PUSHCARE_API_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   if (!PUSHCARE_API_URL) {
     throw new Error("VITE_PUSHCARE_API_URL is not set");
   }
