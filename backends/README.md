@@ -138,6 +138,26 @@ Production deployment guide: [`docs/deployment.md`](./docs/deployment.md).
   per-device on heartbeat/event, per-API-key on /push/send,
   per-device on /push/track.
 
+## Companion services
+
+The backend is the source of truth, but several siblings round out the
+platform:
+
+- **`backends/local-api/`** — an in-memory Express server that mirrors the
+  SDK + dashboard contract so the React admin can be developed without
+  Supabase credentials. Restarts wipe state. See
+  [`backends/local-api/README.md`](./local-api/README.md).
+- **`pushcare-admin/`** — the React/Vite admin console at the repo root.
+  Talks to either `local-api` (when `VITE_PUSHCARE_API_URL` is set) or the
+  production Edge functions via the Supabase JS client. See
+  [`pushcare-admin/README.md`](../pushcare-admin/README.md).
+- **APK build worker** *(roadmap)* — packs an SDK-bundled APK on demand. The
+  schema reserves `apk_builds` rows; the dispatcher pattern (queue-claim +
+  retry) carries over directly when the worker lands.
+- **Subscriber preference portal** *(roadmap)* — a thin static page where
+  end users manage their own opt-ins. Designed to consume the same
+  `/sdk/*` endpoints under a per-subscriber JWT.
+
 ## License
 
 Internal — see repo root.
