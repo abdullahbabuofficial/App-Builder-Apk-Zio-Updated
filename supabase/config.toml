@@ -49,8 +49,9 @@ enable_signup = true
 # Disabling Supabase's built-in JWT check on these is what lets the
 # Android SDK call them with only a public app key.
 #
-# The ONE exception is `apps-stats`, which the dashboard calls with a
-# Supabase auth JWT so RLS scopes results to the calling owner.
+# `apps-stats`, `apk-build-trigger`, and `team-invite` are dashboard
+# calls — they pass the caller's Supabase JWT through to RLS, so we
+# require the JWT here.
 # ---------------------------------------------------------------------
 
 [functions.sdk-init]
@@ -72,4 +73,16 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.apps-stats]
+verify_jwt = true
+
+[functions.signup-init]
+verify_jwt = false
+
+[functions.webhook-deliver]
+verify_jwt = false
+
+[functions.apk-build-trigger]
+verify_jwt = true
+
+[functions.team-invite]
 verify_jwt = true
