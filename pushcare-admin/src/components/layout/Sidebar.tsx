@@ -31,6 +31,14 @@ const SECTIONS: Array<{
     ],
   },
   {
+    label: "ACCOUNT",
+    items: [
+      { to: "/account", label: "Account", icon: "Cog" },
+      { to: "/account/billing", label: "Billing", icon: "Zap" },
+      { to: "/account/team", label: "Team", icon: "Users" },
+    ],
+  },
+  {
     label: "DEVELOPERS",
     items: [
       { to: "/builder", label: "APK Builder", icon: "Hammer" },
