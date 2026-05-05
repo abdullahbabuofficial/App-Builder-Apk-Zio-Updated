@@ -1,12 +1,13 @@
 import express from "express";
 import cors from "cors";
+import { pathToFileURL } from "node:url";
 import { PushCareStore } from "./store.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DEMO_SERVICE_KEY = process.env.PUSHCARE_SERVICE_KEY ?? "sk_live_demo_pushcare_local";
 
-const store = new PushCareStore(DEMO_SERVICE_KEY);
-const app = express();
+export const store = new PushCareStore(DEMO_SERVICE_KEY);
+export const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "1mb" }));
 
@@ -163,7 +164,11 @@ app.post("/push/send", (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`PushCare local-api listening on http://localhost:${PORT}`);
-  console.log(`Demo service key: ${DEMO_SERVICE_KEY}`);
-});
+// Only start the HTTP listener when invoked directly (not under tests).
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  app.listen(PORT, () => {
+    console.log(`PushCare local-api listening on http://localhost:${PORT}`);
+    console.log(`Demo service key: ${DEMO_SERVICE_KEY}`);
+  });
+}

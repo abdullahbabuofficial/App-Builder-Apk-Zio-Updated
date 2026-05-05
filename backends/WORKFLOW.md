@@ -68,3 +68,21 @@ Recommended rollout:
 - **`backends/firebase-service`**: Dispatcher sources consolidated under `firebase-service/` (see folder README in parent `README.md`).
 
 Next steps for full production: finish Edge `_shared` utilities in Supabase repo layout, wire admin auth to Supabase JWT, and replace local-api reads with `/apps/stats` + RLS-backed queries.
+
+## 5. End-to-end production rollout
+
+| Component | Runs as | Recommended host |
+| --- | --- | --- |
+| Postgres schema (`backends/*.sql`) | Migrations + `pg_cron` | Supabase Pro project (Postgres 15, dedicated CPU, PITR) |
+| Edge functions (`/sdk/*`, `/push/*`, `/apps/stats`) | Deno runtime, scale-to-zero | Supabase Functions (same project as the database) |
+| FCM dispatcher (`backends/firebase-service`) | Long-lived Node worker pool, claims via `FOR UPDATE SKIP LOCKED` | Cloud Run / Fly.io / Railway, 2 + min instances, concurrency=1 |
+| Admin console (`pushcare-admin`) | Static React bundle (Vite build) | Any static-asset host — Apache (`deploy-pushcare-server.sh`), Cloudflare Pages, Netlify, Vercel |
+| Dev/test API (`backends/local-api`) | Express on a single Node process | Local machine only — *not* for production traffic |
+
+Suggested rollout order:
+
+1. `./deploy-supabase.sh` — links the project, applies migrations, deploys the edge fns, registers cron jobs.
+2. `./deploy-dispatcher.sh` — builds the Docker image and rolls out Cloud Run with secrets bound for `DATABASE_URL` and `DEFAULT_FCM_CREDENTIALS`.
+3. `./deploy-pushcare-server.sh` — provisions Apache + systemd for the admin console (and the local API if you want a staging mirror behind a private VPN).
+
+Smoke test recipe in `deployment.md` §6 verifies the entire chain end-to-end with one curl per layer.
