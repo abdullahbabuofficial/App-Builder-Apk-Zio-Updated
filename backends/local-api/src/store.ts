@@ -104,6 +104,74 @@ export type ApkBuild = {
   output_url: string | null;
   duration_ms: number | null;
   triggered_by: string;
+  branch?: string | null;
+  release_notes?: string | null;
+};
+
+export type Segment = {
+  id: string; app_id: string; name: string; description: string | null;
+  rules: Record<string, unknown>; estimated_size: number;
+  last_evaluated_at: string | null; created_at: string; updated_at: string;
+};
+
+export type MemberRole = "owner" | "admin" | "developer" | "viewer" | "service";
+
+export type Member = {
+  id: string; user_id: string | null; email: string; display_name: string;
+  role: MemberRole; invited_by: string | null;
+  accepted_at: string | null; last_active_at: string | null; created_at: string;
+};
+
+export type Invite = {
+  id: string; email: string; role: MemberRole; token: string;
+  invited_by: string | null; expires_at: string;
+  accepted_at: string | null; created_at: string;
+};
+
+export type Webhook = {
+  id: string; app_id: string | null; url: string; description: string | null;
+  signing_secret_prefix: string;  // visible part — full secret is whsec_<prefix>_<random>
+  event_types: string[]; is_active: boolean;
+  last_delivery_at: string | null; last_status: number | null;
+  created_at: string; updated_at: string;
+};
+
+export type WebhookDelivery = {
+  id: string; endpoint_id: string; event_type: string;
+  payload: Record<string, unknown>;
+  response_status: number | null; response_body: string | null;
+  attempt_count: number; succeeded: boolean;
+  created_at: string; completed_at: string | null;
+};
+
+export type AuditEntry = {
+  id: string; actor_email: string | null; action: string;
+  target_type: string | null; target_id: string | null;
+  details: Record<string, unknown>; ip: string | null;
+  user_agent: string | null; created_at: string;
+};
+
+export type Plan = {
+  id: string; code: "free" | "pro" | "enterprise"; name: string;
+  monthly_pushes: number; max_apps: number; max_seats: number;
+  monthly_price_usd: number; features: Record<string, unknown>; sort_order: number;
+};
+
+export type Subscription = {
+  id: string; plan_id: string; plan_code: Plan["code"];
+  status: "trialing" | "active" | "past_due" | "cancelled";
+  current_period_start: string; current_period_end: string;
+  cancel_at: string | null; stripe_customer_id: string | null;
+};
+
+export type UsageMonth = {
+  period: string;  // YYYY-MM-01
+  pushes_sent: number; active_devices: number; events_recorded: number;
+};
+
+export type AuthSession = {
+  user_id: string; email: string; display_name: string;
+  access_token: string; expires_at: string;
 };
 
 export type Point = { t: number; v: number };
@@ -150,6 +218,17 @@ export class PushCareStore {
   campaigns: Campaign[] = [];
   apiKeys: ApiKey[] = [];
   builds: ApkBuild[] = [];
+
+  segments = new Map<string, Segment>();
+  members = new Map<string, Member>();
+  invites = new Map<string, Invite>();
+  webhooks = new Map<string, Webhook>();
+  webhookDeliveries: WebhookDelivery[] = [];
+  auditEntries: AuditEntry[] = [];
+  plans: Plan[] = [];
+  subscription: Subscription | null = null;
+  usage: UsageMonth[] = [];
+  sessions = new Map<string, AuthSession>();
 
   constructor(demoServiceKey: string) {
     this.demoServiceKey = demoServiceKey;
@@ -289,8 +368,284 @@ export class PushCareStore {
         output_url: `https://cdn.example/${app.id}/app.apk`,
         duration_ms: 120_000,
         triggered_by: "ci-bot",
+        branch: "main",
+        release_notes: null,
       });
     }
+
+    // --- Segments: 5 per app ---
+    const segmentTemplates: Array<{ name: string; description: string; rules: Record<string, unknown> }> = [
+      { name: "Active Bangladesh users", description: "Users in BD seen in last 7d", rules: { country_in: ["BD"], active_within_days: 7 } },
+      { name: "Heavy spenders", description: "Made a purchase in last 30 days", rules: { event_in_last_days: { event: "purchase", days: 30 } } },
+      { name: "Recent signups", description: "Installed in last 14 days", rules: { installed_within_days: 14 } },
+      { name: "iOS only", description: "Devices on iOS", rules: { platform_in: ["ios"] } },
+      { name: "Crash reporters", description: "Devices that crashed in last 7 days", rules: { event_in_last_days: { event: "app_crash", days: 7 } } },
+    ];
+    for (const app of ownerApps) {
+      const sr = mulberry32(hash32(`seg-${app.id}`));
+      for (const tpl of segmentTemplates) {
+        const ratio = 0.05 + sr() * 0.45;
+        const sid = uuid();
+        const created = daysAgoIso(sr, 5, 90);
+        this.segments.set(sid, {
+          id: sid,
+          app_id: app.id,
+          name: tpl.name,
+          description: tpl.description,
+          rules: tpl.rules,
+          estimated_size: Math.max(1, Math.floor(app.active_devices_24h * ratio)),
+          last_evaluated_at: daysAgoIso(sr, 0, 5),
+          created_at: created,
+          updated_at: created,
+        });
+      }
+    }
+
+    // --- Members: 4 default ---
+    const memberSeeds: Array<{ email: string; display_name: string; role: MemberRole }> = [
+      { email: "admin@pushcare.local", display_name: "Acme Owner", role: "owner" },
+      { email: "ops@pushcare.local", display_name: "Ops Admin", role: "admin" },
+      { email: "dev@pushcare.local", display_name: "Dev User", role: "developer" },
+      { email: "view@pushcare.local", display_name: "Viewer", role: "viewer" },
+    ];
+    let ownerId: string | null = null;
+    for (const m of memberSeeds) {
+      const id = uuid();
+      const created = daysAgoIso(r, 30, 200);
+      const member: Member = {
+        id,
+        user_id: id,
+        email: m.email,
+        display_name: m.display_name,
+        role: m.role,
+        invited_by: m.role === "owner" ? null : ownerId,
+        accepted_at: created,
+        last_active_at: minutesAgoIso(r, 1, 60 * 24),
+        created_at: created,
+      };
+      if (m.role === "owner") ownerId = id;
+      this.members.set(id, member);
+    }
+
+    // --- Invites: 2 pending ---
+    for (const inv of [
+      { email: "newdev@pushcare.local", role: "developer" as MemberRole },
+      { email: "marketing@pushcare.local", role: "viewer" as MemberRole },
+    ]) {
+      const id = uuid();
+      const created = daysAgoIso(r, 0, 5);
+      const expires = new Date(Date.now() + 7 * dayMs).toISOString();
+      this.invites.set(id, {
+        id,
+        email: inv.email,
+        role: inv.role,
+        token: `inv_${crypto.randomBytes(16).toString("hex")}`,
+        invited_by: ownerId,
+        expires_at: expires,
+        accepted_at: null,
+        created_at: created,
+      });
+    }
+
+    // --- Webhooks: 3 ---
+    const webhookSeeds: Array<{ url: string; description: string; events: string[]; active: boolean; app_id: string | null }> = [
+      { url: "https://api.example.com/webhooks/delivery", description: "Production delivery events", events: ["push.sent", "push.delivered", "push.failed"], active: true, app_id: null },
+      { url: "https://hooks.slack.com/services/T000/B000/abc", description: "Slack failure alerts", events: ["push.failed"], active: true, app_id: null },
+      { url: "https://staging.example.com/webhooks/delivery", description: "Staging endpoint (paused)", events: ["push.sent", "push.delivered"], active: false, app_id: null },
+    ];
+    const webhookIds: string[] = [];
+    for (const wh of webhookSeeds) {
+      const id = uuid();
+      webhookIds.push(id);
+      const created = daysAgoIso(r, 7, 90);
+      this.webhooks.set(id, {
+        id,
+        app_id: wh.app_id,
+        url: wh.url,
+        description: wh.description,
+        signing_secret_prefix: crypto.randomBytes(4).toString("hex"),
+        event_types: wh.events,
+        is_active: wh.active,
+        last_delivery_at: wh.active ? minutesAgoIso(r, 5, 60 * 24) : null,
+        last_status: wh.active ? 200 : null,
+        created_at: created,
+        updated_at: created,
+      });
+    }
+
+    // --- Webhook deliveries: 12 spread across last 7 days ---
+    const events = ["push.sent", "push.delivered", "push.failed"];
+    for (let i = 0; i < 12; i++) {
+      const endpointId = webhookIds[Math.floor(r() * webhookIds.length)]!;
+      const failed = i === 3 || i === 9; // 2 failures
+      const created = daysAgoIso(r, 0, 7);
+      const completed = new Date(+new Date(created) + 1500 + r() * 800).toISOString();
+      this.webhookDeliveries.push({
+        id: uuid(),
+        endpoint_id: endpointId,
+        event_type: events[Math.floor(r() * events.length)]!,
+        payload: { example: true, idx: i },
+        response_status: failed ? 502 : 200,
+        response_body: failed ? "Bad Gateway" : "ok",
+        attempt_count: failed ? 3 : 1,
+        succeeded: !failed,
+        created_at: created,
+        completed_at: completed,
+      });
+    }
+    this.webhookDeliveries.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+
+    // --- Audit entries: 50 across last 30 days ---
+    const auditActions = [
+      { action: "app.created", target_type: "app" },
+      { action: "campaign.sent", target_type: "campaign" },
+      { action: "key.created", target_type: "api_key" },
+      { action: "key.revoked", target_type: "api_key" },
+      { action: "member.invited", target_type: "member" },
+      { action: "webhook.created", target_type: "webhook" },
+    ];
+    const actorEmails = memberSeeds.map((m) => m.email);
+    for (let i = 0; i < 50; i++) {
+      const a = auditActions[Math.floor(r() * auditActions.length)]!;
+      this.auditEntries.push({
+        id: uuid(),
+        actor_email: actorEmails[Math.floor(r() * actorEmails.length)]!,
+        action: a.action,
+        target_type: a.target_type,
+        target_id: uuid(),
+        details: { seeded: true },
+        ip: `10.0.${Math.floor(r() * 250)}.${Math.floor(r() * 250)}`,
+        user_agent: "PushCareAdmin/1.0",
+        created_at: daysAgoIso(r, 0, 30),
+      });
+    }
+    this.auditEntries.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+
+    // --- Plans ---
+    this.plans = [
+      {
+        id: uuid(),
+        code: "free",
+        name: "Free",
+        monthly_pushes: 100_000,
+        max_apps: 2,
+        max_seats: 2,
+        monthly_price_usd: 0,
+        features: { push_send: true, analytics_basic: true },
+        sort_order: 1,
+      },
+      {
+        id: uuid(),
+        code: "pro",
+        name: "Pro",
+        monthly_pushes: 50_000_000,
+        max_apps: 25,
+        max_seats: 5,
+        monthly_price_usd: 249,
+        features: {
+          push_send: true,
+          analytics_basic: true,
+          analytics_advanced: true,
+          retention_90d: true,
+          webhooks: true,
+          segments: true,
+        },
+        sort_order: 2,
+      },
+      {
+        id: uuid(),
+        code: "enterprise",
+        name: "Enterprise",
+        monthly_pushes: 1_000_000_000,
+        max_apps: 200,
+        max_seats: 50,
+        monthly_price_usd: 1_299,
+        features: {
+          push_send: true,
+          analytics_basic: true,
+          analytics_advanced: true,
+          retention_90d: true,
+          webhooks: true,
+          segments: true,
+          sso: true,
+          sla: "99.99%",
+        },
+        sort_order: 3,
+      },
+    ];
+
+    // --- Subscription: pro, active ---
+    const proPlan = this.plans.find((p) => p.code === "pro")!;
+    const periodStart = new Date(Date.now() - 12 * dayMs).toISOString();
+    const periodEnd = new Date(Date.now() + 18 * dayMs).toISOString();
+    this.subscription = {
+      id: uuid(),
+      plan_id: proPlan.id,
+      plan_code: "pro",
+      status: "active",
+      current_period_start: periodStart,
+      current_period_end: periodEnd,
+      cancel_at: null,
+      stripe_customer_id: `cus_local_${crypto.randomBytes(8).toString("hex")}`,
+    };
+
+    // --- Usage: 12 months, increasing trend, last month ~14M pushes ---
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const period = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+      const monthsBack = i;
+      // Growth: last month (i=0) ~14M, going down
+      const factor = Math.pow(0.88, monthsBack);
+      const pushes = Math.floor(14_000_000 * factor + (r() - 0.5) * 600_000);
+      const devices = Math.floor(900_000 * factor + (r() - 0.5) * 50_000);
+      const events = Math.floor(40_000_000 * factor + (r() - 0.5) * 1_500_000);
+      this.usage.push({
+        period,
+        pushes_sent: Math.max(0, pushes),
+        active_devices: Math.max(0, devices),
+        events_recorded: Math.max(0, events),
+      });
+    }
+  }
+
+  // --- Helpers for new collections ---
+
+  recordAudit(entry: Omit<AuditEntry, "id" | "created_at">): AuditEntry {
+    const row: AuditEntry = {
+      id: uuid(),
+      created_at: isoNow(),
+      ...entry,
+    };
+    this.auditEntries.unshift(row);
+    return row;
+  }
+
+  validateSession(token: string): AuthSession | null {
+    const s = this.sessions.get(token);
+    if (!s) return null;
+    if (+new Date(s.expires_at) <= Date.now()) {
+      this.sessions.delete(token);
+      return null;
+    }
+    return s;
+  }
+
+  createSession(email: string, displayName: string): AuthSession {
+    const token = `pcat_${crypto.randomBytes(24).toString("hex")}`;
+    const member = [...this.members.values()].find((m) => m.email.toLowerCase() === email.toLowerCase());
+    const userId = member?.user_id ?? member?.id ?? uuid();
+    const expires = new Date(Date.now() + 30 * dayMs).toISOString();
+    const sess: AuthSession = {
+      user_id: userId,
+      email,
+      display_name: displayName,
+      access_token: token,
+      expires_at: expires,
+    };
+    this.sessions.set(token, sess);
+    if (member) member.last_active_at = isoNow();
+    return sess;
   }
 
   findAppByKey(appKey: string): AndroidApp | undefined {
