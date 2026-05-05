@@ -181,12 +181,19 @@ export function PushcareProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (dataSource === "rest") {
-      api.setPushcareRestAccessToken(session?.access_token ?? null);
+      // Only push the Supabase JWT if we actually have one. Otherwise leave
+      // whatever AuthContext set (e.g. a REST `pc_rest_token` from the
+      // local-api `/api/auth/login` flow) in place.
+      if (session?.access_token) {
+        api.setPushcareRestAccessToken(session.access_token);
+      }
     } else {
       api.setPushcareRestAccessToken(null);
     }
     return () => {
-      api.setPushcareRestAccessToken(null);
+      // Don't unconditionally clear — AuthContext may still be holding a
+      // REST bearer token from a non-Supabase login.
+      if (dataSource !== "rest") api.setPushcareRestAccessToken(null);
     };
   }, [dataSource, session?.access_token]);
 
