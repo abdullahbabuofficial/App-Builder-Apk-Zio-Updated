@@ -1,0 +1,18 @@
+# supabase/config.toml
+#
+# Edge Function registration. `verify_jwt = true` makes Supabase reject
+# requests that don't carry a valid Supabase JWT before they hit the
+# function; `false` lets the function handle its own auth (public
+# endpoints, service-role bearers, app-key headers, etc.).
+
+[functions.signup-init]
+verify_jwt = false
+
+[functions.webhook-deliver]
+verify_jwt = false
+
+[functions.apk-build-trigger]
+verify_jwt = true
+
+[functions.team-invite]
+verify_jwt = true
