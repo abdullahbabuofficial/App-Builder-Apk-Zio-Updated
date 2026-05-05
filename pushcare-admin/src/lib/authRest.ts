@@ -1,12 +1,14 @@
 /**
  * REST helpers for the local-api auth endpoints (no Supabase):
- *   POST /api/auth/signup
- *   POST /api/auth/login
- *   POST /api/auth/logout
- *   GET  /api/auth/me
+ *   POST /api/auth/signup     -> { session, member }
+ *   POST /api/auth/login      -> { session, member }
+ *   POST /api/auth/logout     -> { ok }
+ *   GET  /api/auth/me         -> { session, member }
  *
  * These mirror Supabase's public surface enough that AuthContext can swap
- * between the two without leaking the difference into pages.
+ * between the two without leaking the difference into pages. The local-api
+ * actually returns `session` (with `access_token`) + `member` records; we
+ * flatten that into a Supabase-ish `{ access_token, user }` shape here.
  */
 
 import { apiFetch, parseJson } from "./api";
@@ -24,6 +26,40 @@ export type RestAuthResult = {
   user: RestUser;
 };
 
+type ServerSession = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  access_token: string;
+  expires_at: string;
+};
+
+type ServerMember = {
+  id: string;
+  user_id: string | null;
+  email: string;
+  display_name: string;
+  role?: string | null;
+  created_at?: string | null;
+};
+
+function toRestUser(member: ServerMember | null, session: ServerSession): RestUser {
+  if (member) {
+    return {
+      id: member.user_id ?? member.id,
+      email: member.email,
+      name: member.display_name ?? null,
+      role: member.role ?? null,
+      created_at: member.created_at ?? null,
+    };
+  }
+  return {
+    id: session.user_id,
+    email: session.email,
+    name: session.display_name ?? null,
+  };
+}
+
 export async function restSignup(email: string, password: string): Promise<RestAuthResult> {
   const res = await apiFetch("/api/auth/signup", {
     method: "POST",
@@ -32,10 +68,10 @@ export async function restSignup(email: string, password: string): Promise<RestA
   });
   const data = await parseJson<{
     ok?: boolean;
-    access_token: string;
-    user: RestUser;
+    session: ServerSession;
+    member: ServerMember | null;
   }>(res);
-  return { access_token: data.access_token, user: data.user };
+  return { access_token: data.session.access_token, user: toRestUser(data.member, data.session) };
 }
 
 export async function restLogin(email: string, password: string): Promise<RestAuthResult> {
@@ -46,10 +82,10 @@ export async function restLogin(email: string, password: string): Promise<RestAu
   });
   const data = await parseJson<{
     ok?: boolean;
-    access_token: string;
-    user: RestUser;
+    session: ServerSession;
+    member: ServerMember | null;
   }>(res);
-  return { access_token: data.access_token, user: data.user };
+  return { access_token: data.session.access_token, user: toRestUser(data.member, data.session) };
 }
 
 export async function restLogout(): Promise<void> {
@@ -65,8 +101,13 @@ export async function restLogout(): Promise<void> {
 export async function restMe(): Promise<RestUser | null> {
   try {
     const res = await apiFetch("/api/auth/me");
-    const data = await parseJson<{ ok?: boolean; user: RestUser }>(res);
-    return data.user ?? null;
+    const data = await parseJson<{
+      ok?: boolean;
+      session: ServerSession;
+      member: ServerMember | null;
+    }>(res);
+    if (!data.session) return null;
+    return toRestUser(data.member, data.session);
   } catch {
     return null;
   }

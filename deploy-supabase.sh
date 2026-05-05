@@ -51,7 +51,7 @@ SDK_FUNCTIONS=(
   team-invite
 )
 for fn in "${SDK_FUNCTIONS[@]}"; do
-  if [[ -d "supabase/functions/${fn}" || -d "backends/mnt/user-data/outputs/pushcare-backend/supabase/functions/${fn}" ]]; then
+  if [[ -d "supabase/functions/${fn}" ]]; then
     echo "  → ${fn} (--no-verify-jwt)"
     supabase functions deploy "${fn}" --no-verify-jwt
   else
@@ -59,7 +59,7 @@ for fn in "${SDK_FUNCTIONS[@]}"; do
   fi
 done
 # apps-stats is the dashboard endpoint and *requires* JWT verification.
-if [[ -d "supabase/functions/apps-stats" || -d "backends/mnt/user-data/outputs/pushcare-backend/supabase/functions/apps-stats" ]]; then
+if [[ -d "supabase/functions/apps-stats" ]]; then
   echo "  → apps-stats (JWT verified)"
   supabase functions deploy apps-stats
 fi

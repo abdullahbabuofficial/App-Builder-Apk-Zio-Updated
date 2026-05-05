@@ -615,7 +615,7 @@ function WebhooksTab({
                             {delivery.event_type}
                           </span>
                           <span className="font-mono text-[11px] text-bone-low">
-                            attempt {delivery.attempt}
+                            attempt {delivery.attempt_count}
                           </span>
                         </div>
                         {delivery.response_body && (

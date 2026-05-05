@@ -164,7 +164,7 @@ export function TeamPage() {
                       <tr key={m.id} className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
-                            <Avatar glyph={glyphFor(m)} src={m.avatar_url ?? undefined} size={32} />
+                            <Avatar glyph={glyphFor(m)} size={32} />
                             <div>
                               <div className="font-medium text-bone">{m.display_name ?? m.email.split("@")[0]}</div>
                               <div className="font-mono text-[11px] text-bone-low">{m.email}</div>

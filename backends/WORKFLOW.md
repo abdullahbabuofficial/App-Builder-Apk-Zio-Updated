@@ -43,8 +43,8 @@ Aligned with `backends/README.md` and `backends/api.md`:
 
 | Stage | Role |
 |-------|------|
-| **Supabase Postgres** | Source of truth: apps, devices, subscribers, campaigns queue, deliveries (SQL in `001_*.sql` … `005_*.sql`). |
-| **Edge Functions** | SDK ingress (`/sdk/*`), enqueue `/push/send`, `/push/track`, dashboard aggregates `/apps/stats`. Deno examples live under `backends/mnt/user-data/outputs/pushcare-backend/supabase/functions/` — deploy needs `_shared/utils.ts` on Supabase. |
+| **Supabase Postgres** | Source of truth: apps, devices, subscribers, campaigns queue, deliveries (SQL in `supabase/migrations/20260101000001_001_*.sql` … `20260101000006_006_*.sql`). |
+| **Edge Functions** | SDK ingress (`/sdk/*`), enqueue `/push/send`, `/push/track`, dashboard aggregates `/apps/stats`. Deno sources live under `supabase/functions/` and share `supabase/functions/_shared/utils.ts`. |
 | **firebase-service** | Node worker: `FOR UPDATE SKIP LOCKED` queue drain → FCM `sendEachForMulticast` → `push_record_delivery_batch`. |
 
 Recommended rollout:
@@ -67,13 +67,13 @@ Recommended rollout:
 - **`pushcare-admin`**: `PushcareProvider` + `usePushcare()` wire lists, campaigns, keys, builds, devices, subscribers, and analytics to that API when configured.
 - **`backends/firebase-service`**: Dispatcher sources consolidated under `firebase-service/` (see folder README in parent `README.md`).
 
-Next steps for full production: finish Edge `_shared` utilities in Supabase repo layout, wire admin auth to Supabase JWT, and replace local-api reads with `/apps/stats` + RLS-backed queries.
+Next steps for full production: wire admin auth to Supabase JWT and replace local-api reads with `/apps/stats` + RLS-backed queries. (The Edge `_shared/utils.ts` helper now lives at `supabase/functions/_shared/utils.ts`.)
 
 ## 5. End-to-end production rollout
 
 | Component | Runs as | Recommended host |
 | --- | --- | --- |
-| Postgres schema (`backends/*.sql`) | Migrations + `pg_cron` | Supabase Pro project (Postgres 15, dedicated CPU, PITR) |
+| Postgres schema (`supabase/migrations/*.sql`) | Migrations + `pg_cron` | Supabase Pro project (Postgres 15, dedicated CPU, PITR) |
 | Edge functions (`/sdk/*`, `/push/*`, `/apps/stats`) | Deno runtime, scale-to-zero | Supabase Functions (same project as the database) |
 | FCM dispatcher (`backends/firebase-service`) | Long-lived Node worker pool, claims via `FOR UPDATE SKIP LOCKED` | Cloud Run / Fly.io / Railway, 2 + min instances, concurrency=1 |
 | Admin console (`pushcare-admin`) | Static React bundle (Vite build) | Any static-asset host — Apache (`deploy-pushcare-server.sh`), Cloudflare Pages, Netlify, Vercel |

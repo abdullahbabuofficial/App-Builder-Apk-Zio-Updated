@@ -2,6 +2,8 @@
 // Mirrors supabase/migrations/...006_segments_team_webhooks_audit.sql.
 
 export type Plan = {
+  /** Backend uuid — present when the plan came from the API; absent on fallback rows. */
+  id?: string;
   /** Stable code: free | pro | enterprise (or custom). */
   code: string;
   name: string;

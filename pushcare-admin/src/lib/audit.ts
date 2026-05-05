@@ -8,11 +8,13 @@ import { apiFetch, parseJson } from "./api";
 export type AuditEntry = {
   id: string;
   actor_email: string | null;
-  actor_user_id: string | null;
+  /** Auth user id of the actor — present when written from a logged-in session.
+   * The local-api currently doesn't include this, but the Edge schema does. */
+  actor_user_id?: string | null;
   action: string;
   target_type: string | null;
   target_id: string | null;
-  details: Record<string, unknown> | null;
+  details: Record<string, unknown>;
   ip: string | null;
   user_agent: string | null;
   created_at: string;

@@ -61,16 +61,35 @@ serve(async (req) => {
   if (!INVITABLE_ROLES.has(body.role))
     return errorResponse('invalid_role', `role must be one of: ${[...INVITABLE_ROLES].join(',')}`);
 
-  // ---- Insert invite (RLS scopes to current_owner_id) -------------
+  // ---- Resolve owner_id from the caller's JWT ---------------------
+  // `org_invites.owner_id` is NOT NULL, and the column has no default
+  // (RLS WITH CHECK runs after the NOT NULL check). Resolve it explicitly
+  // via the same auth.uid() → app_owners.owner_id mapping that
+  // current_owner_id() uses on the SQL side.
+  const { data: authUser } = await supabase.auth.getUser();
+  const userId = authUser.user?.id ?? null;
+  if (!userId) return errorResponse('unauthorized', 'JWT did not resolve to a user', 401);
+
+  const { data: ownerRow, error: ownerErr } = await supabase
+    .from('app_owners')
+    .select('owner_id')
+    .eq('auth_user_id', userId)
+    .maybeSingle();
+  if (ownerErr) {
+    console.error('team_invite_owner_lookup_error', ownerErr);
+    return errorResponse('owner_lookup_failed', 'could not resolve workspace', 500);
+  }
+  if (!ownerRow) return errorResponse('no_workspace', 'no app_owners row for this user', 403);
+
+  // ---- Insert invite (RLS WITH CHECK still verifies owner match) --
   const token = randomTokenHex(16);
   const { data: invite, error: insErr } = await supabase
     .from('org_invites')
     .insert({
+      owner_id: ownerRow.owner_id,
       email,
       role: body.role,
-      // invited_by defaults to auth.uid() at the DB level, but we set
-      // it explicitly so the table doesn't need a default to function.
-      invited_by: (await supabase.auth.getUser()).data.user?.id ?? null,
+      invited_by: userId,
       token,
     })
     .select('invite_id, email, role, token, expires_at')

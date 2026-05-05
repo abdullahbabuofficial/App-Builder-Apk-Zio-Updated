@@ -1,13 +1,18 @@
 import { PUSHCARE_API_URL } from "./config";
 
-export type MemberRole = "owner" | "admin" | "developer" | "viewer";
+export type MemberRole = "owner" | "admin" | "developer" | "viewer" | "service";
 
 export type Member = {
   id: string;
+  /** Auth-provider user id; null for invite-only members or service tokens. */
+  user_id?: string | null;
   email: string;
   display_name: string | null;
   role: MemberRole;
-  avatar_url: string | null;
+  /** Member id of the inviter; null for the owner/seed members. */
+  invited_by?: string | null;
+  /** ISO timestamp when the invite was accepted; null if still pending. */
+  accepted_at?: string | null;
   last_active_at: string | null;
   created_at: string;
 };
@@ -97,7 +102,7 @@ export async function removeMember(id: string): Promise<void> {
 
 export async function updateMemberRole(id: string, role: MemberRole): Promise<Member> {
   if (!PUSHCARE_API_URL) throw new Error("API not configured");
-  const res = await fetch(teamUrl(`/api/members/${encodeURIComponent(id)}`), {
+  const res = await fetch(teamUrl(`/api/members/${encodeURIComponent(id)}/role`), {
     method: "PATCH",
     headers: teamHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ role }),

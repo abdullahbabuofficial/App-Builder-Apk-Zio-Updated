@@ -27,6 +27,8 @@ export type Webhook = {
   id: string;
   app_id: string | null;
   url: string;
+  /** Optional human-readable description for the webhook (returned by backend). */
+  description?: string | null;
   signing_secret_prefix: string;
   event_types: WebhookEventType[];
   is_active: boolean;
@@ -44,7 +46,8 @@ export type WebhookDelivery = {
   response_status: number | null;
   response_body: string | null;
   succeeded: boolean;
-  attempt: number;
+  /** Number of delivery attempts made (matches server `attempt_count`). */
+  attempt_count: number;
   created_at: string;
   completed_at: string | null;
 };
@@ -52,11 +55,12 @@ export type WebhookDelivery = {
 export type WebhookCreate = {
   app_id?: string | null;
   url: string;
+  description?: string | null;
   event_types: WebhookEventType[];
   is_active?: boolean;
 };
 
-export type WebhookUpdate = Partial<Pick<Webhook, "url" | "event_types" | "is_active">>;
+export type WebhookUpdate = Partial<Pick<Webhook, "url" | "description" | "event_types" | "is_active">>;
 
 export async function fetchWebhooks(): Promise<Webhook[]> {
   const res = await apiFetch("/api/webhooks");
