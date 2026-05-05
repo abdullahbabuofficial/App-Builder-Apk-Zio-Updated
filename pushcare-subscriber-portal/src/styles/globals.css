@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --color-bg: #0e0d0b;
+    --color-surface: #15130f;
+    --color-line: #2b2820;
+    --color-bone: #f5f1e8;
+    --color-bone-mid: #b8b2a0;
+    --color-signal: #cdff3f;
+  }
+
+  html, body, #root { height: 100%; }
+  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  body {
+    font-family: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    color: var(--color-bone);
+    background: var(--color-bg);
+    font-feature-settings: "ss01", "cv11", "tnum";
+  }
+  ::selection {
+    background: var(--color-signal);
+    color: #0e0d0b;
+  }
+
+  /* Subtle warm noise grain on the page background */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.96  0 0 0 0 0.94  0 0 0 0 0.91  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    mix-blend-mode: overlay;
+    opacity: 0.6;
+    pointer-events: none;
+    z-index: 0;
+  }
+  #root { position: relative; z-index: 1; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #2b2820;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #3d3a30; background-clip: padding-box; }
+
+  /* Focus ring */
+  *:focus-visible {
+    outline: 2px solid #cdff3f;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Typographic helpers */
+  .font-display { font-family: "Newsreader", ui-serif, Georgia, serif; }
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+  /* Hairline border helper */
+  .hairline { box-shadow: 0 0 0 1px var(--color-line); }
+
+  /* Headings */
+  h1, h2, h3, h4 { letter-spacing: -0.01em; }
+}
+
+@layer utilities {
+  /* Text balance for headlines */
+  .balance { text-wrap: balance; }
+  .pretty  { text-wrap: pretty; }
+}
