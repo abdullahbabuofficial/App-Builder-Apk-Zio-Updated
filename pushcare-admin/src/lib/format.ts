@@ -56,13 +56,17 @@ export function dateTime(d: Date | number | string): string {
   return dt.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-// Bytes — 24.1 MB
+// Bytes — "24 MB" / "1.5 KB" / "150 MB" / "512 B".
+// One decimal for KB+ under 100, zero for raw bytes and values ≥100.
+// Trailing ".0" is trimmed so "24.0 MB" → "24 MB" while "1.5 KB" stays.
 export function bytes(n: number): string {
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let v = n;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
+  const decimals = v >= 100 || i === 0 ? 0 : 1;
+  const str = decimals > 0 ? v.toFixed(decimals).replace(/\.0+$/, "") : v.toFixed(0);
+  return `${str} ${u[i]}`;
 }
 
 // Duration in ms → "1m 23s" / "245ms"
