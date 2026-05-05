@@ -5,6 +5,7 @@ import { Input, Field } from "@/components/ui/Input";
 import { Icon } from "@/lib/icons";
 import { useAuth } from "@/context/AuthContext";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
+import { PUSHCARE_API_URL } from "@/lib/config";
 
 export function SignIn() {
   const navigate = useNavigate();
@@ -25,12 +26,16 @@ export function SignIn() {
 
   if (signedIn) return <Navigate to="/dashboard" replace />;
 
+  const hasRestAuth = Boolean(PUSHCARE_API_URL);
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured || hasRestAuth) {
+        // Both paths flow through the same `signInWithPassword`; AuthContext
+        // dispatches to Supabase or local-api `/api/auth/login` based on env.
         await signInWithPassword(email.trim(), pwd);
         navigate("/dashboard");
       } else {
@@ -122,7 +127,9 @@ export function SignIn() {
           <p className="mt-3 text-[14px] text-bone-mid">
             {isSupabaseConfigured
               ? "Sign in with your Supabase Auth email and password."
-              : "Demo mode: any email/password continues without Supabase (set VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY for real auth)."}
+              : hasRestAuth
+                ? "Sign in with your PushCare admin email and password."
+                : "Demo mode: any email/password continues without Supabase (set VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY for real auth)."}
           </p>
 
           <form onSubmit={(e) => void submit(e)} className="mt-8 space-y-4">
@@ -174,7 +181,10 @@ export function SignIn() {
               variant="primary"
               size="lg"
               fullWidth
-              disabled={submitting || (isSupabaseConfigured && (!email.trim() || !pwd))}
+              disabled={
+                submitting ||
+                ((isSupabaseConfigured || hasRestAuth) && (!email.trim() || !pwd))
+              }
             >
               {submitting ? (
                 <>
