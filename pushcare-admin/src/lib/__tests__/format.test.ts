@@ -96,8 +96,13 @@ describe("bytes", () => {
   it("formats KB with one decimal", () => {
     expect(bytes(1500)).toBe("1.5 KB");
   });
-  it("formats MB", () => {
-    expect(bytes(24 * 1024 * 1024)).toBe("24 MB");
+  it("formats MB with one decimal under 100", () => {
+    // bytes() keeps one decimal for KB/MB/GB/TB until the value reaches 100,
+    // at which point it drops to integer formatting. See lib/format.ts.
+    expect(bytes(24 * 1024 * 1024)).toBe("24.0 MB");
+  });
+  it("formats MB without decimals at or above 100", () => {
+    expect(bytes(150 * 1024 * 1024)).toBe("150 MB");
   });
 });
 
