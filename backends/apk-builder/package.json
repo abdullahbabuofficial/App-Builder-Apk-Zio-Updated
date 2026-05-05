@@ -1,0 +1,28 @@
+{
+  "name": "@pushcare/apk-builder",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "PushCare APK builder — simulated build worker; pluggable for real Gradle.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "dependencies": {
+    "pg": "^8.13.0",
+    "p-limit": "^6.1.0",
+    "pino": "^9.5.0",
+    "archiver": "^7.0.1",
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/pg": "^8.11.0",
+    "@types/archiver": "^6.0.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
