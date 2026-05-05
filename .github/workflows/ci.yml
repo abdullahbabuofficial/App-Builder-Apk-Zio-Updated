@@ -40,6 +40,20 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  apk-builder:
+    name: apk-builder
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backends/apk-builder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run build
+
   pushcare-admin:
     name: pushcare-admin
     runs-on: ubuntu-latest
@@ -56,6 +70,21 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  pushcare-subscriber-portal:
+    name: pushcare-subscriber-portal
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pushcare-subscriber-portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+
   sql-lint:
     name: sql-lint
     runs-on: ubuntu-latest
@@ -65,10 +94,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Migrations live under backends/ in this repo.
-          files=(backends/*.sql)
+          files=(supabase/migrations/*.sql)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No SQL migrations found under backends/"; exit 1
+            echo "No SQL migrations found under supabase/migrations/"; exit 1
           fi
           for f in "${files[@]}"; do
             if ! head -1 "$f" | grep -q '^--'; then

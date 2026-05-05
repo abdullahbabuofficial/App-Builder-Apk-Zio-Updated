@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git merge *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Merge Lane 2: signup-init, webhook-deliver, apk-build-trigger, team-invite edge fns *)",
+      "Bash(git commit -m 'Merge Lane 8: tests + CI + deploy scripts + final docs *)",
+      "Bash(git commit -m 'Patch Lane 8 path/scope deviations after merge *)"
+    ]
+  }
+}

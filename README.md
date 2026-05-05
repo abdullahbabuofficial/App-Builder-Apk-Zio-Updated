@@ -10,10 +10,12 @@ worker for FCM dispatch, and a React admin console.
 
 | Path | What it is |
 | --- | --- |
-| `backends/` | Postgres schema (5 SQL migrations), edge function references, dev API |
+| `supabase/` | Postgres schema (6 timestamped migrations) + 11 Edge Functions + `config.toml` for the Supabase CLI |
 | `backends/firebase-service/` | FCM dispatcher — claims queued campaigns and sends batches via `firebase-admin` |
+| `backends/apk-builder/` | Queue worker that produces signed APKs from the `apk_builds` table (currently simulated; clear seam for real Gradle) |
 | `backends/local-api/` | In-memory dev REST API. Boots in <1s, mirrors the SDK and dashboard surface for offline UI work |
-| `pushcare-admin/` | Admin/customer console — React + Vite. Wires to either the local API or production Supabase |
+| `pushcare-admin/` | Admin + customer console — React + Vite. Public landing/pricing/signup, onboarding wizard, account/billing/team, plus the original control plane |
+| `pushcare-subscriber-portal/` | End-user preferences mini-app — opens via signed JWT link from the Android SDK, lets a user pause / opt out / delete their subscription |
 
 ## Quick start (local)
 
@@ -61,6 +63,13 @@ from the Apps page, and follow `backends/WORKFLOW.md` for the curl recipes.
    ┌────────────────────────────┐                ┌─────────────────────────────┐
    │ pushcare-admin (React/Vite)│  HTTPS+JWT     │  backends/local-api (dev)   │
    │  control plane / analytics │ ──── or ────►  │  in-memory mirror, no FCM   │
+   │  + signup / onboarding     │                │                             │
+   │  + account / billing / team│                │                             │
+   └────────────────────────────┘                └─────────────────────────────┘
+
+   ┌────────────────────────────┐                ┌─────────────────────────────┐
+   │ pushcare-subscriber-portal │  signed JWT    │  apk-builder (queue worker) │
+   │  end-user opt-out / pause  │  link from SDK │  produces signed APKs       │
    └────────────────────────────┘                └─────────────────────────────┘
 ```
 
