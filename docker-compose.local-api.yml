@@ -1,0 +1,32 @@
+# Apkzio local-api with Android toolchain for URL → debug APK builds.
+#
+#   docker compose -f docker-compose.local-api.yml build
+#   docker compose -f docker-compose.local-api.yml up -d
+#
+# Persistence: Gradle/Android caches + staged artifacts live in named volumes.
+# Debug APK only (direct install — not Play Store). Override env in `backends/.env` if needed.
+
+services:
+  local-api:
+    build:
+      context: ./backends/local-api
+      dockerfile: Dockerfile
+    image: apkzio-local-api:latest
+    ports:
+      - "${LOCAL_API_PORT:-8787}:8787"
+    env_file:
+      - ./backends/.env
+    environment:
+      NODE_ENV: production
+      # Container image ships SDK here — keep in sync with Dockerfile ANDROID_HOME.
+      ANDROID_HOME: /opt/android-sdk
+      ANDROID_SDK_ROOT: /opt/android-sdk
+      APKZIO_ENABLE_APK_BUILD: "${APKZIO_ENABLE_APK_BUILD:-1}"
+      APKZIO_GRADLE_TASK: assembleDebug
+    volumes:
+      - apkzio-local-api-builds:/app/.builds
+      - apkzio-gradle-user-home:/root/.gradle
+
+volumes:
+  apkzio-local-api-builds:
+  apkzio-gradle-user-home:

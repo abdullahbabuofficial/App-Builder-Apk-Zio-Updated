@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-dispatcher.sh — build + push + roll out the PushCare FCM dispatcher.
+# deploy-dispatcher.sh — build + push + roll out the ApkZio FCM dispatcher.
 #
 # Wraps the steps from `backends/deployment.md` §5:
 #   1. cd backends/firebase-service
@@ -10,14 +10,14 @@
 # Required env:
 #   GCP_PROJECT          — GCP project id, used for the gcr.io repo path.
 #   FCM_SECRET_NAME      — name of Secret Manager secret holding service account
-#                          JSON for DEFAULT_FCM_CREDENTIALS (e.g. pushcare-fcm).
+#                          JSON for DEFAULT_FCM_CREDENTIALS (e.g. apkzio-fcm).
 #   DB_SECRET_NAME       — name of Secret Manager secret holding DATABASE_URL
-#                          (e.g. pushcare-db-url).
+#                          (e.g. apkzio-db-url).
 #
 # Optional env:
 #   IMAGE_TAG            — defaults to "latest". Use a SHA in CI for traceability.
 #   GCP_REGION           — defaults to "asia-southeast1".
-#   SERVICE_NAME         — defaults to "pushcare-dispatcher".
+#   SERVICE_NAME         — defaults to "apkzio-dispatcher".
 #   MIN_INSTANCES        — defaults to "2".
 #   MAX_INSTANCES        — defaults to "20".
 #   WORKER_CONCURRENCY   — internal async slots per pod, defaults to "4".
@@ -31,7 +31,7 @@ set -euo pipefail
 
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 GCP_REGION="${GCP_REGION:-asia-southeast1}"
-SERVICE_NAME="${SERVICE_NAME:-pushcare-dispatcher}"
+SERVICE_NAME="${SERVICE_NAME:-apkzio-dispatcher}"
 MIN_INSTANCES="${MIN_INSTANCES:-2}"
 MAX_INSTANCES="${MAX_INSTANCES:-20}"
 WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-4}"

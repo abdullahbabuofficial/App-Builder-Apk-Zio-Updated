@@ -12,6 +12,7 @@
 import { db, claimNextNotification } from './db.js';
 import { dispatchNotification } from './dispatcher.js';
 import { logger } from './logger.js';
+import { buildDispatcherStatusPayload } from './public-status.js';
 import http from 'node:http';
 
 const WORKER_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 4);
@@ -24,19 +25,54 @@ const inflight = new Set<Promise<void>>();
 // ---------------------------------------------------------------------
 // Health check + readiness probe HTTP server.
 // ---------------------------------------------------------------------
+function requestPath(req: http.IncomingMessage): string {
+  const raw = req.url ?? '/';
+  try {
+    return new URL(raw, 'http://127.0.0.1').pathname;
+  } catch {
+    const q = raw.indexOf('?');
+    return q === -1 ? raw : raw.slice(0, q);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
-  if (req.url === '/healthz') {
+  const path = requestPath(req);
+
+  // `/health` aliases `/healthz` so the same probes as apkzio-local-api work.
+  if (path === '/healthz' || path === '/health') {
     try {
       await db.query('SELECT 1');
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, inflight: inflight.size }));
-    } catch (err) {
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: 'apkzio-firebase-dispatcher',
+          inflight: inflight.size,
+        }),
+      );
+    } catch {
       res.writeHead(503, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: false }));
+      res.end(JSON.stringify({ ok: false, service: 'apkzio-firebase-dispatcher' }));
     }
     return;
   }
-  res.writeHead(404); res.end();
+
+  if (path === '/api/status' && req.method === 'GET') {
+    let dbReachable = false;
+    try {
+      await db.query('SELECT 1');
+      dbReachable = true;
+    } catch {
+      dbReachable = false;
+    }
+    const payload = buildDispatcherStatusPayload(dbReachable, inflight.size, WORKER_CONCURRENCY);
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(payload));
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
 // ---------------------------------------------------------------------

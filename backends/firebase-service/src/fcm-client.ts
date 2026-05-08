@@ -33,7 +33,7 @@ function defaultCredentials(): ServiceAccount {
   if (!raw) throw new Error('DEFAULT_FCM_CREDENTIALS env not set');
   try {
     return JSON.parse(raw) as ServiceAccount;
-  } catch (err) {
+  } catch {
     throw new Error('DEFAULT_FCM_CREDENTIALS is not valid JSON');
   }
 }

@@ -1,9 +1,12 @@
 /**
- * In-memory store + seed data. Mirrors pushcare-admin types closely enough
+ * In-memory store + seed data. Mirrors apkzio-admin types closely enough
  * for full local workflow (SDK → devices/subscribers → campaigns).
  */
 
 import crypto from "node:crypto";
+
+import type { AuthUser } from "./auth.js";
+import { hashPassword } from "./auth.js";
 
 // --- Shared shapes (JSON-serializable for responses) ---
 
@@ -67,6 +70,9 @@ export type Campaign = {
   click_url: string | null;
   target_type: "all" | "active" | "country" | "device_list";
   target_summary: string;
+  active_within_minutes?: number;
+  country_codes?: string[];
+  device_ids?: string[];
   status: CampaignStatus;
   created_at: string;
   scheduled_at: string | null;
@@ -92,6 +98,22 @@ export type ApiKey = {
   created_at: string;
 };
 
+export type WebViewBuildConfig = {
+  app_name: string;
+  package_name: string;
+  start_url: string;
+  primary_color: string;
+  background_color: string;
+  splash_color: string;
+  allow_file_uploads: boolean;
+  allow_geolocation: boolean;
+  allow_camera: boolean;
+  pull_to_refresh: boolean;
+  swipe_back: boolean;
+  offline_message: string;
+  release_notes: string;
+};
+
 export type ApkBuild = {
   id: string;
   app_id: string;
@@ -104,80 +126,191 @@ export type ApkBuild = {
   output_url: string | null;
   duration_ms: number | null;
   triggered_by: string;
-  branch?: string | null;
-  release_notes?: string | null;
-  /** sha256 (hex) of the produced APK. */
-  apk_sha256?: string | null;
-  /** Captured build output (gradle stdout/stderr or simulated trace). */
-  build_log?: string | null;
-  /** Set when status === "failed". */
-  error_message?: string | null;
+  /**
+   * Path to the generated WebView source archive, relative to the API origin
+   * (e.g. `/artifacts/<id>/source.zip`). Always equal to `output_url` for real
+   * builds — kept as a separate field so the dashboard can disambiguate the
+   * legacy "fake APK url" rows from the seed data.
+   */
+  source_zip_url?: string | null;
+  /** Snapshot of the WebView config we ran the template against. */
+  config?: WebViewBuildConfig | null;
+  /** Convenience count so the dashboard can poll without fetching the log body. */
+  logs_count?: number;
+  /**
+   * Optional owner — set by the public builder bridge when the caller
+   * presents a Bearer token. Admin-created builds leave this undefined.
+   */
+  user_id?: string;
+  /**
+   * Optional generated APK download URL (e.g. `/artifacts/<id>/app-debug.apk`).
+   * Only populated when the host has JDK 17 + Gradle + ANDROID_HOME and the
+   * `APKZIO_ENABLE_APK_BUILD` env var is set; otherwise null and the build
+   * is treated as ZIP-only.
+   */
+  apk_url?: string | null;
+  /** Size of the generated APK in bytes, when one was produced. */
+  apk_size_bytes?: number | null;
+  /** True when the runner deliberately skipped the Gradle pass. */
+  apk_build_skipped?: boolean;
+  /** Reason string if the Gradle pass ran but failed (e.g. "exit 1", "timeout"). */
+  apk_build_error?: string | null;
 };
 
-export type Segment = {
-  id: string; app_id: string; name: string; description: string | null;
-  rules: Record<string, unknown>; estimated_size: number;
-  last_evaluated_at: string | null; created_at: string; updated_at: string;
+// --- WordPress plugins + site telemetry (admin Plugins pages) ---
+
+export type WpPlugin = {
+  id: string;
+  slug: string;
+  name: string;
+  latest_version: string;
+  description?: string;
 };
 
-export type MemberRole = "owner" | "admin" | "developer" | "viewer" | "service";
-
-export type Member = {
-  id: string; user_id: string | null; email: string; display_name: string;
-  role: MemberRole; invited_by: string | null;
-  accepted_at: string | null; last_active_at: string | null; created_at: string;
+/** API shape — never includes `site_token_hash`. */
+export type WpSiteInstall = {
+  id: string;
+  plugin_id: string;
+  site_url: string;
+  wp_version: string;
+  plugin_version: string;
+  created_at: string;
+  last_seen_at: string;
+  subscribers_total: number;
 };
 
-export type Invite = {
-  id: string; email: string; role: MemberRole; token: string;
-  invited_by: string | null; expires_at: string;
-  accepted_at: string | null; created_at: string;
+type WpSiteInstallRow = WpSiteInstall & { site_token_hash: string };
+
+type WpTrafficBucket = { pageviews: number; uniques: number };
+
+export type WpPluginRange = "rt" | "d" | "w" | "m";
+
+// --- Customer-scoped types (public frontend bridge) ---
+
+export type StoredUser = AuthUser & {
+  password_hash: string;
+  password_salt: string;
+  /** Firebase Auth UID when the user signed in with Google. */
+  google_uid?: string;
+  /** Updated on sign-in and `/api/auth/me` — operator CRM only (not in `publicUser`). */
+  last_seen_at?: string;
+  reset_token?: string;
+  reset_token_exp?: number;
+  email_verification_token?: string;
 };
 
-export type Webhook = {
-  id: string; app_id: string | null; url: string; description: string | null;
-  signing_secret_prefix: string;  // visible part — full secret is whsec_<prefix>_<random>
-  event_types: string[]; is_active: boolean;
-  last_delivery_at: string | null; last_status: number | null;
-  created_at: string; updated_at: string;
+export type CartItem = {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  quantity: number;
+  added_at: string;
 };
 
-export type WebhookDelivery = {
-  id: string; endpoint_id: string; event_type: string;
-  payload: Record<string, unknown>;
-  response_status: number | null; response_body: string | null;
-  attempt_count: number; succeeded: boolean;
-  created_at: string; completed_at: string | null;
-};
-
-export type AuditEntry = {
-  id: string; actor_email: string | null; action: string;
-  target_type: string | null; target_id: string | null;
-  details: Record<string, unknown>; ip: string | null;
-  user_agent: string | null; created_at: string;
-};
-
-export type Plan = {
-  id: string; code: "free" | "pro" | "enterprise"; name: string;
-  monthly_pushes: number; max_apps: number; max_seats: number;
-  monthly_price_usd: number; features: Record<string, unknown>; sort_order: number;
+export type Cart = {
+  items: CartItem[];
+  promo_code: string | null;
+  discount_pct: number;
 };
 
 export type Subscription = {
-  id: string; plan_id: string; plan_code: Plan["code"];
-  status: "trialing" | "active" | "past_due" | "cancelled";
-  current_period_start: string; current_period_end: string;
-  cancel_at: string | null; stripe_customer_id: string | null;
+  id: string;
+  user_id: string;
+  plan_name: string;
+  status: "active" | "cancelled";
+  started_at: string;
+  amount: number;
 };
 
-export type UsageMonth = {
-  period: string;  // YYYY-MM-01
-  pushes_sent: number; active_devices: number; events_recorded: number;
+export type Payment = {
+  id: string;
+  user_id: string;
+  amount: number;
+  status: "succeeded" | "failed";
+  method: string;
+  created_at: string;
+  invoice_id?: string;
 };
 
-export type AuthSession = {
-  user_id: string; email: string; display_name: string;
-  access_token: string; expires_at: string;
+export type InvoiceItem = {
+  name: string;
+  description: string;
+  price: number;
+  quantity: number;
+};
+
+export type Invoice = {
+  id: string;
+  number: string;
+  user_id: string;
+  total: number;
+  subtotal: number;
+  discount: number;
+  status: "paid" | "open" | "void";
+  paid_at: string | null;
+  created_at: string;
+  items: InvoiceItem[];
+};
+
+export type ContactMessage = {
+  id: string;
+  name: string;
+  email: string;
+  subject: string | null;
+  message: string;
+  topic: string | null;
+  created_at: string;
+};
+
+/** Operator-console directory row (no password material). */
+export type AdminClientAccountStatus = "lead" | "active" | "churned";
+
+export type AdminClientSummary = {
+  id: string;
+  email: string;
+  full_name: string;
+  plan: AuthUser["plan"];
+  email_verified: boolean;
+  created_at: string;
+  /** ISO timestamp from auth/session activity; null if never recorded. */
+  last_seen_at: string | null;
+  google_linked: boolean;
+  apps_count: number;
+  builds_count: number;
+  active_subscriptions: number;
+  lifetime_revenue: number;
+  account_status: AdminClientAccountStatus;
+};
+
+export type AdminClientAppRow = {
+  id: string;
+  name: string;
+  package_name: string;
+  status: AppStatus;
+  created_at: string;
+};
+
+export type AdminClientBuildRow = {
+  id: string;
+  app_id: string;
+  version_name: string;
+  version_code: number;
+  status: ApkBuild["status"];
+  build_started_at: string;
+  build_completed_at: string | null;
+};
+
+export type AdminClientDetail = {
+  summary: AdminClientSummary;
+  profile: AuthUser;
+  apps: AdminClientAppRow[];
+  builds: AdminClientBuildRow[];
+  subscriptions: Subscription[];
+  payments: Payment[];
+  invoices: Invoice[];
+  cart: { items_count: number; promo_code: string | null };
+  contact_messages: ContactMessage[];
 };
 
 export type Point = { t: number; v: number };
@@ -212,7 +345,38 @@ const MANUFACTURERS = ["Samsung", "Xiaomi", "Google", "OnePlus"] as const;
 
 type StoredSubscriber = Subscriber & { _fcm_token: string };
 
-export class PushCareStore {
+function minuteKeyUtc(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 16);
+}
+
+function hourKeyUtc(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 13);
+}
+
+function dayKeyUtc(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function utcDayStartMs(ts: number): number {
+  const x = new Date(ts);
+  return Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
+}
+
+/** Canonical site URL for de-duping WP installs (matches PHP apkzio_normalize_site_url). */
+function normalizeWpSiteUrl(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    const host = u.hostname.toLowerCase();
+    u.hash = "";
+    let pathname = u.pathname || "/";
+    if (pathname !== "/" && pathname.endsWith("/")) pathname = pathname.slice(0, -1);
+    return `${u.protocol}//${host}${pathname === "/" ? "" : pathname}`;
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+}
+
+export class ApkZioStore {
   readonly demoServiceKey: string;
   private readonly keysByHash = new Map<string, string>(); // sha256 hex -> raw key
 
@@ -224,17 +388,40 @@ export class PushCareStore {
   campaigns: Campaign[] = [];
   apiKeys: ApiKey[] = [];
   builds: ApkBuild[] = [];
+  /**
+   * Real per-build log lines, written by the WebView runner. Seed builds don't
+   * have an entry here — we fall back to `synthesizeBuildLogs` for them so the
+   * dashboard's logs panel keeps working.
+   */
+  private buildLogs = new Map<string, string[]>();
 
-  segments = new Map<string, Segment>();
-  members = new Map<string, Member>();
-  invites = new Map<string, Invite>();
-  webhooks = new Map<string, Webhook>();
-  webhookDeliveries: WebhookDelivery[] = [];
-  auditEntries: AuditEntry[] = [];
-  plans: Plan[] = [];
-  subscription: Subscription | null = null;
-  usage: UsageMonth[] = [];
-  sessions = new Map<string, AuthSession>();
+  /** WordPress plugin catalog */
+  wpPlugins = new Map<string, WpPlugin>();
+  /** Site installs (one row per connected WP site) */
+  private wpSites = new Map<string, WpSiteInstallRow>();
+  /** site_id → minute ISO key "YYYY-MM-DDTHH:MM" (UTC) → aggregates */
+  private wpTrafficMinute = new Map<string, Map<string, WpTrafficBucket>>();
+  /** site_id → hour key "YYYY-MM-DDTHH" */
+  private wpTrafficHour = new Map<string, Map<string, WpTrafficBucket>>();
+  /** site_id → day key "YYYY-MM-DD" */
+  private wpTrafficDay = new Map<string, Map<string, WpTrafficBucket>>();
+
+  // --- Customer-scoped collections (keyed by user_id) ---
+
+  users = new Map<string, StoredUser>();
+  usersByEmail = new Map<string, string>();
+  /** Firebase Google UID → user id */
+  private usersByGoogleUid = new Map<string, string>();
+  /** user_id → array of app_ids the user owns. */
+  userApps = new Map<string, string[]>();
+  /** user_id → cart */
+  userCarts = new Map<string, Cart>();
+  userSubscriptions = new Map<string, Subscription[]>();
+  userPayments = new Map<string, Payment[]>();
+  userInvoices = new Map<string, Invoice[]>();
+  private userPushTokens = new Map<string, Set<string>>();
+  contactMessages: ContactMessage[] = [];
+  private invoiceCounter = 1000;
 
   constructor(demoServiceKey: string) {
     this.demoServiceKey = demoServiceKey;
@@ -374,284 +561,323 @@ export class PushCareStore {
         output_url: `https://cdn.example/${app.id}/app.apk`,
         duration_ms: 120_000,
         triggered_by: "ci-bot",
-        branch: "main",
-        release_notes: null,
       });
     }
 
-    // --- Segments: 5 per app ---
-    const segmentTemplates: Array<{ name: string; description: string; rules: Record<string, unknown> }> = [
-      { name: "Active Bangladesh users", description: "Users in BD seen in last 7d", rules: { country_in: ["BD"], active_within_days: 7 } },
-      { name: "Heavy spenders", description: "Made a purchase in last 30 days", rules: { event_in_last_days: { event: "purchase", days: 30 } } },
-      { name: "Recent signups", description: "Installed in last 14 days", rules: { installed_within_days: 14 } },
-      { name: "iOS only", description: "Devices on iOS", rules: { platform_in: ["ios"] } },
-      { name: "Crash reporters", description: "Devices that crashed in last 7 days", rules: { event_in_last_days: { event: "app_crash", days: 7 } } },
+    this.seedWpData();
+  }
+
+  private seedWpData(): void {
+    const pluginsSeed: WpPlugin[] = [
+      {
+        id: uuid(),
+        slug: "apkzio-web-push",
+        name: "ApkZio Web Push",
+        latest_version: "2.1.0",
+        description: "Web push subscriptions and engagement for WordPress.",
+      },
+      {
+        id: uuid(),
+        slug: "apkzio-analytics-lite",
+        name: "ApkZio Analytics Lite",
+        latest_version: "1.4.2",
+        description: "Lightweight traffic and conversion signals.",
+      },
+      {
+        id: uuid(),
+        slug: "apkzio-engage",
+        name: "ApkZio Engage",
+        latest_version: "0.9.8",
+        description: "On-site messaging and prompts.",
+      },
     ];
-    for (const app of ownerApps) {
-      const sr = mulberry32(hash32(`seg-${app.id}`));
-      for (const tpl of segmentTemplates) {
-        const ratio = 0.05 + sr() * 0.45;
-        const sid = uuid();
-        const created = daysAgoIso(sr, 5, 90);
-        this.segments.set(sid, {
-          id: sid,
-          app_id: app.id,
-          name: tpl.name,
-          description: tpl.description,
-          rules: tpl.rules,
-          estimated_size: Math.max(1, Math.floor(app.active_devices_24h * ratio)),
-          last_evaluated_at: daysAgoIso(sr, 0, 5),
-          created_at: created,
-          updated_at: created,
-        });
+    for (const p of pluginsSeed) this.wpPlugins.set(p.id, p);
+
+    const sitesPerPlugin = [6, 5, 4];
+    const domains = [
+      "https://shop.example.com",
+      "https://news.example.org",
+      "https://blog.acme.test",
+      "https://learn.wpexample.io",
+      "https://storefront.demo",
+      "https://members.clubhouse.test",
+      "https://portal.health-demo.com",
+      "https://magazine.publisher.test",
+      "https://courses.edu-sample.net",
+      "https://community.forum-demo.io",
+      "https://app.saas-mock.dev",
+      "https://docs.readme-mock.dev",
+      "https://checkout.commerce-mock.shop",
+      "https://landing.campaign-mock.com",
+      "https://support.helpdesk-mock.net",
+    ];
+
+    let di = 0;
+    for (let pi = 0; pi < pluginsSeed.length; pi++) {
+      const plugin = pluginsSeed[pi]!;
+      const n = sitesPerPlugin[pi] ?? 4;
+      const r = mulberry32(hash32(`wp-site-${plugin.id}`));
+      for (let i = 0; i < n; i++) {
+        const siteId = uuid();
+        const site_url = domains[di % domains.length]!;
+        di++;
+        const tokenPlain = `wpt_local_${siteId}`;
+        const row: WpSiteInstallRow = {
+          id: siteId,
+          plugin_id: plugin.id,
+          site_url,
+          wp_version: ["6.4", "6.5", "6.6", "6.7"][Math.floor(r() * 4)]!,
+          plugin_version: plugin.latest_version,
+          created_at: daysAgoIso(r, 5, 400),
+          last_seen_at: minutesAgoIso(r, 2, 45),
+          subscribers_total: Math.floor(200 + r() * 8000),
+          site_token_hash: sha256hex(tokenPlain),
+        };
+        this.wpSites.set(row.id, row);
+        this.ensureWpTrafficMaps(row.id);
+
+        const now = Date.now();
+        for (let m = 59; m >= 0; m--) {
+          const t = now - m * 60_000;
+          const pv = Math.floor(5 + r() * 120);
+          const u = Math.floor(2 + r() * (pv * 0.6));
+          this.bumpWpTraffic(row.id, t, pv, u);
+        }
+        for (let h = 1; h <= 168; h++) {
+          const t = now - h * 3600_000;
+          const pv = Math.floor(50 + r() * 2000);
+          const u = Math.floor(20 + r() * (pv * 0.5));
+          this.bumpWpTraffic(row.id, t, pv, u);
+        }
+        for (let d = 0; d < 30; d++) {
+          const t = now - d * dayMs;
+          const pv = Math.floor(800 + r() * 25_000);
+          const u = Math.floor(300 + r() * (pv * 0.45));
+          this.bumpWpTraffic(row.id, t, pv, u);
+        }
       }
-    }
-
-    // --- Members: 4 default ---
-    const memberSeeds: Array<{ email: string; display_name: string; role: MemberRole }> = [
-      { email: "admin@pushcare.local", display_name: "Acme Owner", role: "owner" },
-      { email: "ops@pushcare.local", display_name: "Ops Admin", role: "admin" },
-      { email: "dev@pushcare.local", display_name: "Dev User", role: "developer" },
-      { email: "view@pushcare.local", display_name: "Viewer", role: "viewer" },
-    ];
-    let ownerId: string | null = null;
-    for (const m of memberSeeds) {
-      const id = uuid();
-      const created = daysAgoIso(r, 30, 200);
-      const member: Member = {
-        id,
-        user_id: id,
-        email: m.email,
-        display_name: m.display_name,
-        role: m.role,
-        invited_by: m.role === "owner" ? null : ownerId,
-        accepted_at: created,
-        last_active_at: minutesAgoIso(r, 1, 60 * 24),
-        created_at: created,
-      };
-      if (m.role === "owner") ownerId = id;
-      this.members.set(id, member);
-    }
-
-    // --- Invites: 2 pending ---
-    for (const inv of [
-      { email: "newdev@pushcare.local", role: "developer" as MemberRole },
-      { email: "marketing@pushcare.local", role: "viewer" as MemberRole },
-    ]) {
-      const id = uuid();
-      const created = daysAgoIso(r, 0, 5);
-      const expires = new Date(Date.now() + 7 * dayMs).toISOString();
-      this.invites.set(id, {
-        id,
-        email: inv.email,
-        role: inv.role,
-        token: `inv_${crypto.randomBytes(16).toString("hex")}`,
-        invited_by: ownerId,
-        expires_at: expires,
-        accepted_at: null,
-        created_at: created,
-      });
-    }
-
-    // --- Webhooks: 3 ---
-    const webhookSeeds: Array<{ url: string; description: string; events: string[]; active: boolean; app_id: string | null }> = [
-      { url: "https://api.example.com/webhooks/delivery", description: "Production delivery events", events: ["push.sent", "push.delivered", "push.failed"], active: true, app_id: null },
-      { url: "https://hooks.slack.com/services/T000/B000/abc", description: "Slack failure alerts", events: ["push.failed"], active: true, app_id: null },
-      { url: "https://staging.example.com/webhooks/delivery", description: "Staging endpoint (paused)", events: ["push.sent", "push.delivered"], active: false, app_id: null },
-    ];
-    const webhookIds: string[] = [];
-    for (const wh of webhookSeeds) {
-      const id = uuid();
-      webhookIds.push(id);
-      const created = daysAgoIso(r, 7, 90);
-      this.webhooks.set(id, {
-        id,
-        app_id: wh.app_id,
-        url: wh.url,
-        description: wh.description,
-        signing_secret_prefix: crypto.randomBytes(4).toString("hex"),
-        event_types: wh.events,
-        is_active: wh.active,
-        last_delivery_at: wh.active ? minutesAgoIso(r, 5, 60 * 24) : null,
-        last_status: wh.active ? 200 : null,
-        created_at: created,
-        updated_at: created,
-      });
-    }
-
-    // --- Webhook deliveries: 12 spread across last 7 days ---
-    const events = ["push.sent", "push.delivered", "push.failed"];
-    for (let i = 0; i < 12; i++) {
-      const endpointId = webhookIds[Math.floor(r() * webhookIds.length)]!;
-      const failed = i === 3 || i === 9; // 2 failures
-      const created = daysAgoIso(r, 0, 7);
-      const completed = new Date(+new Date(created) + 1500 + r() * 800).toISOString();
-      this.webhookDeliveries.push({
-        id: uuid(),
-        endpoint_id: endpointId,
-        event_type: events[Math.floor(r() * events.length)]!,
-        payload: { example: true, idx: i },
-        response_status: failed ? 502 : 200,
-        response_body: failed ? "Bad Gateway" : "ok",
-        attempt_count: failed ? 3 : 1,
-        succeeded: !failed,
-        created_at: created,
-        completed_at: completed,
-      });
-    }
-    this.webhookDeliveries.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-
-    // --- Audit entries: 50 across last 30 days ---
-    const auditActions = [
-      { action: "app.created", target_type: "app" },
-      { action: "campaign.sent", target_type: "campaign" },
-      { action: "key.created", target_type: "api_key" },
-      { action: "key.revoked", target_type: "api_key" },
-      { action: "member.invited", target_type: "member" },
-      { action: "webhook.created", target_type: "webhook" },
-    ];
-    const actorEmails = memberSeeds.map((m) => m.email);
-    for (let i = 0; i < 50; i++) {
-      const a = auditActions[Math.floor(r() * auditActions.length)]!;
-      this.auditEntries.push({
-        id: uuid(),
-        actor_email: actorEmails[Math.floor(r() * actorEmails.length)]!,
-        action: a.action,
-        target_type: a.target_type,
-        target_id: uuid(),
-        details: { seeded: true },
-        ip: `10.0.${Math.floor(r() * 250)}.${Math.floor(r() * 250)}`,
-        user_agent: "PushCareAdmin/1.0",
-        created_at: daysAgoIso(r, 0, 30),
-      });
-    }
-    this.auditEntries.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-
-    // --- Plans ---
-    this.plans = [
-      {
-        id: uuid(),
-        code: "free",
-        name: "Free",
-        monthly_pushes: 100_000,
-        max_apps: 2,
-        max_seats: 2,
-        monthly_price_usd: 0,
-        features: { push_send: true, analytics_basic: true },
-        sort_order: 1,
-      },
-      {
-        id: uuid(),
-        code: "pro",
-        name: "Pro",
-        monthly_pushes: 50_000_000,
-        max_apps: 25,
-        max_seats: 5,
-        monthly_price_usd: 249,
-        features: {
-          push_send: true,
-          analytics_basic: true,
-          analytics_advanced: true,
-          retention_90d: true,
-          webhooks: true,
-          segments: true,
-        },
-        sort_order: 2,
-      },
-      {
-        id: uuid(),
-        code: "enterprise",
-        name: "Enterprise",
-        monthly_pushes: 1_000_000_000,
-        max_apps: 200,
-        max_seats: 50,
-        monthly_price_usd: 1_299,
-        features: {
-          push_send: true,
-          analytics_basic: true,
-          analytics_advanced: true,
-          retention_90d: true,
-          webhooks: true,
-          segments: true,
-          sso: true,
-          sla: "99.99%",
-        },
-        sort_order: 3,
-      },
-    ];
-
-    // --- Subscription: pro, active ---
-    const proPlan = this.plans.find((p) => p.code === "pro")!;
-    const periodStart = new Date(Date.now() - 12 * dayMs).toISOString();
-    const periodEnd = new Date(Date.now() + 18 * dayMs).toISOString();
-    this.subscription = {
-      id: uuid(),
-      plan_id: proPlan.id,
-      plan_code: "pro",
-      status: "active",
-      current_period_start: periodStart,
-      current_period_end: periodEnd,
-      cancel_at: null,
-      stripe_customer_id: `cus_local_${crypto.randomBytes(8).toString("hex")}`,
-    };
-
-    // --- Usage: 12 months, increasing trend, last month ~14M pushes ---
-    const now = new Date();
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const period = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
-      const monthsBack = i;
-      // Growth: last month (i=0) ~14M, going down
-      const factor = Math.pow(0.88, monthsBack);
-      const pushes = Math.floor(14_000_000 * factor + (r() - 0.5) * 600_000);
-      const devices = Math.floor(900_000 * factor + (r() - 0.5) * 50_000);
-      const events = Math.floor(40_000_000 * factor + (r() - 0.5) * 1_500_000);
-      this.usage.push({
-        period,
-        pushes_sent: Math.max(0, pushes),
-        active_devices: Math.max(0, devices),
-        events_recorded: Math.max(0, events),
-      });
     }
   }
 
-  // --- Helpers for new collections ---
+  private ensureWpTrafficMaps(siteId: string): void {
+    if (!this.wpTrafficMinute.has(siteId)) this.wpTrafficMinute.set(siteId, new Map());
+    if (!this.wpTrafficHour.has(siteId)) this.wpTrafficHour.set(siteId, new Map());
+    if (!this.wpTrafficDay.has(siteId)) this.wpTrafficDay.set(siteId, new Map());
+  }
 
-  recordAudit(entry: Omit<AuditEntry, "id" | "created_at">): AuditEntry {
-    const row: AuditEntry = {
-      id: uuid(),
-      created_at: isoNow(),
-      ...entry,
+  private bumpWpTraffic(siteId: string, atMs: number, dPv: number, dU: number): void {
+    this.ensureWpTrafficMaps(siteId);
+    const mk = minuteKeyUtc(atMs);
+    const hk = hourKeyUtc(atMs);
+    const dk = dayKeyUtc(atMs);
+    const merge = (map: Map<string, WpTrafficBucket>, key: string) => {
+      const cur = map.get(key) ?? { pageviews: 0, uniques: 0 };
+      cur.pageviews += dPv;
+      cur.uniques += dU;
+      map.set(key, cur);
     };
-    this.auditEntries.unshift(row);
+    merge(this.wpTrafficMinute.get(siteId)!, mk);
+    merge(this.wpTrafficHour.get(siteId)!, hk);
+    merge(this.wpTrafficDay.get(siteId)!, dk);
+  }
+
+  listWpPlugins(): WpPlugin[] {
+    return [...this.wpPlugins.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  getWpPlugin(id: string): WpPlugin | undefined {
+    return this.wpPlugins.get(id);
+  }
+
+  wpSiteToPublic(row: WpSiteInstallRow): WpSiteInstall {
+    const { site_token_hash: _, ...pub } = row;
+    return pub;
+  }
+
+  listWpSitesForPlugin(pluginId: string): WpSiteInstallRow[] {
+    return [...this.wpSites.values()].filter((s) => s.plugin_id === pluginId);
+  }
+
+  findWpSiteById(siteId: string): WpSiteInstallRow | undefined {
+    return this.wpSites.get(siteId);
+  }
+
+  verifyWpSiteToken(siteId: string, tokenPlain: string): WpSiteInstallRow | undefined {
+    const row = this.wpSites.get(siteId);
+    if (!row) return undefined;
+    const h = sha256hex(tokenPlain);
+    if (h !== row.site_token_hash) return undefined;
     return row;
   }
 
-  validateSession(token: string): AuthSession | null {
-    const s = this.sessions.get(token);
-    if (!s) return null;
-    if (+new Date(s.expires_at) <= Date.now()) {
-      this.sessions.delete(token);
-      return null;
+  /** Register a new WP site; returns plaintext token once (caller must persist). Same plugin + normalized URL reconnects (rotates token, same site id). */
+  registerWpSite(input: {
+    plugin_id: string;
+    site_url: string;
+    wp_version?: string;
+    plugin_version?: string;
+  }): { site: WpSiteInstall; site_token: string } {
+    const plugin = this.wpPlugins.get(input.plugin_id);
+    if (!plugin) throw new Error("plugin_not_found");
+    const url = String(input.site_url ?? "").trim();
+    if (!url || !/^https?:\/\//i.test(url)) throw new Error("invalid_site_url");
+    const norm = normalizeWpSiteUrl(url);
+    const site_token = `wpt_${crypto.randomBytes(28).toString("hex")}`;
+    const existing = [...this.wpSites.values()].find(
+      (s) => s.plugin_id === plugin.id && normalizeWpSiteUrl(s.site_url) === norm,
+    );
+    if (existing) {
+      existing.site_token_hash = sha256hex(site_token);
+      existing.last_seen_at = isoNow();
+      existing.site_url = url;
+      if (typeof input.wp_version === "string" && input.wp_version.trim()) {
+        existing.wp_version = input.wp_version.trim().slice(0, 32);
+      }
+      if (typeof input.plugin_version === "string" && input.plugin_version.trim()) {
+        existing.plugin_version = input.plugin_version.trim().slice(0, 32);
+      }
+      return { site: this.wpSiteToPublic(existing), site_token };
     }
-    return s;
+    const siteId = uuid();
+    const row: WpSiteInstallRow = {
+      id: siteId,
+      plugin_id: plugin.id,
+      site_url: url,
+      wp_version: (input.wp_version ?? "0.0.0").slice(0, 32),
+      plugin_version: (input.plugin_version ?? plugin.latest_version).slice(0, 32),
+      created_at: isoNow(),
+      last_seen_at: isoNow(),
+      subscribers_total: 0,
+      site_token_hash: sha256hex(site_token),
+    };
+    this.wpSites.set(row.id, row);
+    this.ensureWpTrafficMaps(row.id);
+    return { site: this.wpSiteToPublic(row), site_token };
   }
 
-  createSession(email: string, displayName: string): AuthSession {
-    const token = `pcat_${crypto.randomBytes(24).toString("hex")}`;
-    const member = [...this.members.values()].find((m) => m.email.toLowerCase() === email.toLowerCase());
-    const userId = member?.user_id ?? member?.id ?? uuid();
-    const expires = new Date(Date.now() + 30 * dayMs).toISOString();
-    const sess: AuthSession = {
-      user_id: userId,
-      email,
-      display_name: displayName,
-      access_token: token,
-      expires_at: expires,
+  ingestWpTelemetry(
+    siteId: string,
+    tokenPlain: string,
+    body: {
+      wp_version?: string;
+      plugin_version?: string;
+      pageviews_delta: number;
+      uniques_delta: number;
+      subscribers_total: number;
+    },
+  ): WpSiteInstall {
+    const row = this.verifyWpSiteToken(siteId, tokenPlain);
+    if (!row) throw new Error("unauthorized");
+    const now = Date.now();
+    if (typeof body.wp_version === "string" && body.wp_version.trim()) {
+      row.wp_version = body.wp_version.trim().slice(0, 32);
+    }
+    if (typeof body.plugin_version === "string" && body.plugin_version.trim()) {
+      row.plugin_version = body.plugin_version.trim().slice(0, 32);
+    }
+    row.last_seen_at = isoNow();
+    row.subscribers_total = Math.max(0, Math.floor(body.subscribers_total));
+    const dPv = Math.max(0, Math.floor(body.pageviews_delta));
+    const dU = Math.max(0, Math.floor(body.uniques_delta));
+    if (dPv > 0 || dU > 0) this.bumpWpTraffic(row.id, now, dPv, dU);
+    return this.wpSiteToPublic(row);
+  }
+
+  /** Merge per-site buckets into a single time series (sums pageviews as `v`). */
+  wpAggregatedSeries(
+    pluginId: string,
+    range: WpPluginRange,
+    metric: "pageviews" | "uniques",
+  ): Point[] {
+    const sites = this.listWpSitesForPlugin(pluginId);
+    const field = metric === "pageviews" ? "pageviews" : "uniques";
+    const merged = new Map<number, number>();
+
+    const now = Date.now();
+    if (range === "rt") {
+      for (let m = 59; m >= 0; m--) {
+        const t = now - m * 60_000;
+        const mk = minuteKeyUtc(t);
+        let sum = 0;
+        for (const s of sites) {
+          const sm = this.wpTrafficMinute.get(s.id);
+          sum += sm?.get(mk)?.[field] ?? 0;
+        }
+        merged.set(Math.floor(t / 60_000) * 60_000, sum);
+      }
+    } else if (range === "d") {
+      for (let h = 23; h >= 0; h--) {
+        const t = now - h * 3600_000;
+        const hk = hourKeyUtc(t);
+        let sum = 0;
+        for (const s of sites) {
+          sum += this.wpTrafficHour.get(s.id)?.get(hk)?.[field] ?? 0;
+        }
+        merged.set(Math.floor(t / 3600_000) * 3600_000, sum);
+      }
+    } else if (range === "w") {
+      const day0 = utcDayStartMs(now);
+      for (let d = 6; d >= 0; d--) {
+        const t = day0 - d * dayMs;
+        const dk = dayKeyUtc(t);
+        let sum = 0;
+        for (const s of sites) {
+          sum += this.wpTrafficDay.get(s.id)?.get(dk)?.[field] ?? 0;
+        }
+        merged.set(t, sum);
+      }
+    } else {
+      const day0 = utcDayStartMs(now);
+      for (let d = 29; d >= 0; d--) {
+        const t = day0 - d * dayMs;
+        const dk = dayKeyUtc(t);
+        let sum = 0;
+        for (const s of sites) {
+          sum += this.wpTrafficDay.get(s.id)?.get(dk)?.[field] ?? 0;
+        }
+        merged.set(t, sum);
+      }
+    }
+
+    return [...merged.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([t, v]) => ({ t, v }));
+  }
+
+  wpSiteSparkline(siteId: string, points = 24): Point[] {
+    const now = Date.now();
+    const out: Point[] = [];
+    for (let i = points - 1; i >= 0; i--) {
+      const t = now - i * 3600_000;
+      const hk = hourKeyUtc(t);
+      const v = this.wpTrafficHour.get(siteId)?.get(hk)?.pageviews ?? 0;
+      out.push({ t: Math.floor(t / 3600_000) * 3600_000, v });
+    }
+    return out;
+  }
+
+  wpRollupTotals(pluginId: string, range: WpPluginRange): {
+    pageviews: number;
+    uniques: number;
+    subscribers: number;
+    active_sites: number;
+    installs: number;
+  } {
+    const sites = this.listWpSitesForPlugin(pluginId);
+    const seriesPv = this.wpAggregatedSeries(pluginId, range, "pageviews");
+    const seriesU = this.wpAggregatedSeries(pluginId, range, "uniques");
+    const pageviews = seriesPv.reduce((s, p) => s + p.v, 0);
+    const uniques = seriesU.reduce((s, p) => s + p.v, 0);
+    const subscribers = sites.reduce((s, x) => s + x.subscribers_total, 0);
+    const staleMin = range === "rt" ? 60 : range === "d" ? 24 * 60 : 7 * 24 * 60;
+    const active = sites.filter((s) => minutesSince(s.last_seen_at) <= staleMin).length;
+    return {
+      pageviews,
+      uniques,
+      subscribers,
+      active_sites: active,
+      installs: sites.length,
     };
-    this.sessions.set(token, sess);
-    if (member) member.last_active_at = isoNow();
-    return sess;
   }
 
   findAppByKey(appKey: string): AndroidApp | undefined {
@@ -679,6 +905,15 @@ export class PushCareStore {
     return [...this.subscribers.values()]
       .filter((s) => s.app_id === appId)
       .map(({ _fcm_token: _, ...rest }) => rest);
+  }
+
+  updateSubscriberValidity(id: string, isValid: boolean): Subscriber {
+    const sub = this.subscribers.get(id);
+    if (!sub) throw new Error("not_found");
+    sub.is_valid = isValid;
+    sub.last_seen_at = isoNow();
+    const { _fcm_token: _, ...publicSub } = sub;
+    return publicSub;
   }
 
   /** Resolve targeting for a campaign */
@@ -714,6 +949,33 @@ export class PushCareStore {
 
     const ids = new Set(target.device_ids ?? []);
     return subs.filter((s) => ids.has(s.device_id));
+  }
+
+  resolveFcmTokens(
+    appId: string,
+    target: {
+      type: "all" | "active" | "country" | "device_list";
+      active_within_minutes?: number;
+      country_codes?: string[];
+      device_ids?: string[];
+    },
+  ): string[] {
+    const matched = this.matchSubscribers(appId, target);
+    return matched
+      .map((s) => String(s._fcm_token ?? "").trim())
+      .filter((t) => t.length >= 20 && !t.startsWith("placeholder-") && !t.startsWith("rot-"));
+  }
+
+  addUserPushToken(userId: string, token: string): void {
+    const t = String(token ?? "").trim();
+    if (t.length < 20) return;
+    const set = this.userPushTokens.get(userId) ?? new Set<string>();
+    set.add(t);
+    this.userPushTokens.set(userId, set);
+  }
+
+  listUserPushTokens(userId: string): string[] {
+    return [...(this.userPushTokens.get(userId) ?? new Set<string>())];
   }
 
   recalcAppMetrics(appId: string): void {
@@ -883,6 +1145,9 @@ export class PushCareStore {
       click_url: input.click_url ?? null,
       target_type: input.target_type,
       target_summary,
+      active_within_minutes: input.active_within_minutes,
+      country_codes: input.target_type === "country" ? input.country_codes ?? [] : undefined,
+      device_ids: input.target_type === "device_list" ? input.device_ids ?? [] : undefined,
       status: isScheduled ? "scheduled" : "sent",
       created_at: isoNow(),
       scheduled_at: isScheduled ? input.scheduled_at! : null,
@@ -900,6 +1165,868 @@ export class PushCareStore {
       app.total_pushes_sent += recipients;
     }
     return camp;
+  }
+
+  // --- Apps CRUD ---
+
+  createApp(input: {
+    name: string;
+    package_name: string;
+    fcm_project_id?: string | null;
+    icon_glyph?: string;
+    icon_color?: string;
+  }): AndroidApp {
+    const name = (input.name ?? "").trim();
+    const pkg = (input.package_name ?? "").trim();
+    if (!name) throw new Error("name_required");
+    if (!pkg) throw new Error("package_name_required");
+    const glyph = (input.icon_glyph ?? deriveGlyph(name)).slice(0, 4).toUpperCase();
+    const app: AndroidApp = {
+      id: uuid(),
+      name,
+      package_name: pkg,
+      app_key: `pk_${crypto.randomBytes(24).toString("hex")}`,
+      status: "active",
+      icon_color: input.icon_color ?? "from-emerald-500/20 to-emerald-500/5",
+      icon_glyph: glyph,
+      total_installs: 0,
+      active_devices_24h: 0,
+      live_users: 0,
+      total_pushes_sent: 0,
+      delivery_rate: 0,
+      open_rate: 0,
+      created_at: isoNow(),
+      fcm_project_id: input.fcm_project_id ?? null,
+    };
+    this.apps.set(app.id, app);
+    return app;
+  }
+
+  updateApp(id: string, patch: {
+    name?: string;
+    status?: AppStatus;
+    fcm_project_id?: string | null;
+    icon_glyph?: string;
+    icon_color?: string;
+  }): AndroidApp {
+    const a = this.apps.get(id);
+    if (!a) throw new Error("not_found");
+    if (typeof patch.name === "string" && patch.name.trim()) a.name = patch.name.trim();
+    if (patch.status === "active" || patch.status === "paused" || patch.status === "suspended") {
+      a.status = patch.status;
+    }
+    if (patch.fcm_project_id !== undefined) a.fcm_project_id = patch.fcm_project_id;
+    if (typeof patch.icon_glyph === "string" && patch.icon_glyph.trim()) {
+      a.icon_glyph = patch.icon_glyph.slice(0, 4).toUpperCase();
+    }
+    if (typeof patch.icon_color === "string" && patch.icon_color.trim()) {
+      a.icon_color = patch.icon_color;
+    }
+    return a;
+  }
+
+  deleteApp(id: string): boolean {
+    if (!this.apps.has(id)) return false;
+    for (const [did, dev] of [...this.devices.entries()]) {
+      if (dev.app_id === id) {
+        const sid = this.deviceSubscriber.get(did);
+        if (sid) {
+          this.subscribers.delete(sid);
+          this.deviceSubscriber.delete(did);
+        }
+        this.devices.delete(did);
+      }
+    }
+    for (const [sid, sub] of [...this.subscribers.entries()]) {
+      if (sub.app_id === id) {
+        this.subscribers.delete(sid);
+        this.deviceSubscriber.delete(sub.device_id);
+      }
+    }
+    this.campaigns = this.campaigns.filter((c) => c.app_id !== id);
+    this.apiKeys = this.apiKeys.filter((k) => k.app_id !== id);
+    this.builds = this.builds.filter((b) => b.app_id !== id);
+    this.apps.delete(id);
+    return true;
+  }
+
+  // --- API keys ---
+
+  createApiKey(input: {
+    app_id: string;
+    name: string;
+    scopes: string[];
+    rate_limit_rpm: number;
+    expires_at?: string | null;
+    environment?: "live" | "test";
+  }): { api_key: ApiKey; secret: string } {
+    if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+    const env = input.environment === "test" ? "test" : "live";
+    const prefix = env === "test" ? "sk_test_" : "sk_live_";
+    const random = crypto.randomBytes(16).toString("hex");
+    const secret = `${prefix}${random}`;
+    const preview = `${prefix}${random.slice(0, 4)}…${random.slice(-5)}`;
+    this.keysByHash.set(sha256hex(secret), secret);
+    const apiKey: ApiKey = {
+      id: uuid(),
+      app_id: input.app_id,
+      name: (input.name ?? "").trim() || "untitled-key",
+      key_preview: preview,
+      scopes: Array.isArray(input.scopes) ? input.scopes.map((s) => String(s)) : [],
+      rate_limit_rpm: Number.isFinite(input.rate_limit_rpm) ? Math.max(1, Math.floor(input.rate_limit_rpm)) : 600,
+      is_active: true,
+      last_used_at: null,
+      expires_at: input.expires_at ?? null,
+      created_at: isoNow(),
+    };
+    this.apiKeys.push(apiKey);
+    return { api_key: apiKey, secret };
+  }
+
+  updateApiKey(id: string, patch: {
+    is_active?: boolean;
+    name?: string;
+    scopes?: string[];
+    rate_limit_rpm?: number;
+    expires_at?: string | null;
+  }): ApiKey {
+    const k = this.apiKeys.find((x) => x.id === id);
+    if (!k) throw new Error("not_found");
+    if (typeof patch.is_active === "boolean") k.is_active = patch.is_active;
+    if (typeof patch.name === "string" && patch.name.trim()) k.name = patch.name.trim();
+    if (Array.isArray(patch.scopes)) k.scopes = patch.scopes.map((s) => String(s));
+    if (typeof patch.rate_limit_rpm === "number" && Number.isFinite(patch.rate_limit_rpm)) {
+      k.rate_limit_rpm = Math.max(1, Math.floor(patch.rate_limit_rpm));
+    }
+    if (patch.expires_at !== undefined) k.expires_at = patch.expires_at;
+    return k;
+  }
+
+  /**
+   * Revoke an API key. We keep the row in `apiKeys` (only flipping is_active=false)
+   * to preserve audit/list history rather than hard-deleting.
+   */
+  revokeApiKey(id: string): ApiKey {
+    const k = this.apiKeys.find((x) => x.id === id);
+    if (!k) throw new Error("not_found");
+    k.is_active = false;
+    return k;
+  }
+
+  // --- Builds ---
+
+  createBuild(input: {
+    app_id: string;
+    version_code: number;
+    version_name: string;
+    branch?: string;
+    release_notes?: string;
+    /**
+     * Partial WebView config supplied by the dashboard. The runner fills in
+     * defaults from the parent app row before storing the resolved config
+     * back on the build via `setBuildResult`.
+     */
+    config?: Partial<WebViewBuildConfig> | null;
+    /** Optional owner — set by the public builder bridge. */
+    user_id?: string;
+    /** Override the "triggered_by" attribution string. */
+    triggered_by?: string;
+  }): ApkBuild {
+    if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+    const versionCode = Number(input.version_code);
+    const versionName = String(input.version_name ?? "").trim();
+    if (!Number.isFinite(versionCode) || versionCode <= 0) throw new Error("invalid_version_code");
+    if (!versionName) throw new Error("invalid_version_name");
+    const startedAt = isoNow();
+    const build: ApkBuild = {
+      id: uuid(),
+      app_id: input.app_id,
+      version_code: Math.floor(versionCode),
+      version_name: versionName,
+      status: "queued",
+      build_started_at: startedAt,
+      build_completed_at: null,
+      size_bytes: null,
+      output_url: null,
+      duration_ms: null,
+      triggered_by: input.triggered_by ?? "dashboard",
+      source_zip_url: null,
+      // Stored loosely on creation; the runner resolves and overwrites it
+      // with a full `WebViewBuildConfig` once the pipeline starts.
+      config: (input.config as WebViewBuildConfig | null | undefined) ?? null,
+      logs_count: 0,
+      user_id: input.user_id,
+    };
+    this.builds.unshift(build);
+    this.buildLogs.set(build.id, []);
+    return build;
+  }
+
+  getBuildById(id: string): ApkBuild | undefined {
+    return this.builds.find((x) => x.id === id);
+  }
+
+  /** Drive a status transition. No-op when the build isn't found. */
+  setBuildStatus(id: string, status: ApkBuild["status"]): void {
+    const b = this.getBuildById(id);
+    if (!b) return;
+    b.status = status;
+  }
+
+  /**
+   * Patch a build with end-of-pipeline results (success or failure). Caller
+   * supplies a partial — we only mutate keys that are present so we can't
+   * accidentally null a successful build's `output_url`.
+   */
+  setBuildResult(id: string, patch: Partial<ApkBuild>): void {
+    const b = this.getBuildById(id);
+    if (!b) return;
+    for (const [k, v] of Object.entries(patch) as Array<[keyof ApkBuild, unknown]>) {
+      if (v === undefined) continue;
+      (b as Record<string, unknown>)[k] = v;
+    }
+  }
+
+  /** Append a real log line emitted by the WebView build runner. */
+  appendBuildLog(id: string, line: string): void {
+    const arr = this.buildLogs.get(id);
+    if (!arr) return;
+    const stamp = `[${isoNow()}] ${line}`;
+    arr.push(stamp);
+    const b = this.getBuildById(id);
+    if (b) b.logs_count = arr.length;
+  }
+
+  getBuildLogs(id: string): string[] {
+    const b = this.builds.find((x) => x.id === id);
+    if (!b) throw new Error("not_found");
+    const real = this.buildLogs.get(id);
+    if (real && real.length > 0) return [...real];
+    // Seed builds (and brand-new rows that haven't emitted any line yet) fall
+    // back to synthesised logs so the legacy dashboard panel keeps working.
+    return synthesizeBuildLogs(b);
+  }
+
+  // --- Campaign actions ---
+
+  pauseCampaign(id: string): Campaign {
+    const c = this.campaigns.find((x) => x.id === id);
+    if (!c) throw new Error("not_found");
+    if (c.status !== "scheduled" && c.status !== "queued") throw new Error("invalid_state");
+    c.status = "draft";
+    c.scheduled_at = null;
+    return c;
+  }
+
+  cancelCampaign(id: string): Campaign {
+    const c = this.campaigns.find((x) => x.id === id);
+    if (!c) throw new Error("not_found");
+    if (c.status !== "scheduled" && c.status !== "queued" && c.status !== "dispatching") {
+      throw new Error("invalid_state");
+    }
+    c.status = "failed";
+    c.failed_count = c.recipients_count;
+    return c;
+  }
+
+  duplicateCampaign(id: string): Campaign {
+    const src = this.campaigns.find((x) => x.id === id);
+    if (!src) throw new Error("not_found");
+    const dup: Campaign = {
+      id: uuid(),
+      app_id: src.app_id,
+      title: src.title,
+      body: src.body,
+      image_url: src.image_url,
+      click_url: src.click_url,
+      target_type: src.target_type,
+      target_summary: src.target_summary,
+      active_within_minutes: src.active_within_minutes,
+      country_codes: src.country_codes,
+      device_ids: src.device_ids,
+      status: "draft",
+      created_at: isoNow(),
+      scheduled_at: null,
+      sent_at: null,
+      recipients_count: 0,
+      sent_count: 0,
+      delivered_count: 0,
+      opened_count: 0,
+      clicked_count: 0,
+      failed_count: 0,
+    };
+    this.campaigns.unshift(dup);
+    return dup;
+  }
+
+  sendDraftCampaign(id: string): Campaign {
+    const c = this.campaigns.find((x) => x.id === id);
+    if (!c) throw new Error("not_found");
+    if (c.status !== "draft") throw new Error("invalid_state");
+    const app = this.apps.get(c.app_id);
+    if (!app) throw new Error("app_not_found");
+    const matched = this.matchSubscribers(c.app_id, {
+      type: c.target_type,
+      active_within_minutes: c.active_within_minutes,
+      country_codes: c.country_codes,
+      device_ids: c.device_ids,
+    });
+    const recipients = matched.length;
+    c.status = "sent";
+    c.scheduled_at = null;
+    c.sent_at = isoNow();
+    c.recipients_count = recipients;
+    c.sent_count = recipients;
+    c.delivered_count = Math.floor(recipients * 0.84);
+    c.opened_count = Math.floor(recipients * 0.084);
+    c.clicked_count = Math.floor(recipients * 0.017);
+    c.failed_count = Math.max(0, recipients - c.delivered_count);
+    app.total_pushes_sent += recipients;
+    this.recalcAppMetrics(c.app_id);
+    return c;
+  }
+
+  // --- Users ---
+
+  createUser(input: {
+    email: string;
+    password: string;
+    full_name: string;
+  }): StoredUser {
+    const email = (input.email ?? "").trim().toLowerCase();
+    const fullName = (input.full_name ?? "").trim();
+    const password = String(input.password ?? "");
+    if (!isValidEmail(email)) throw new Error("invalid_email");
+    if (password.length < 8) throw new Error("invalid_password");
+    if (!fullName) throw new Error("invalid_full_name");
+    if (this.usersByEmail.has(email)) throw new Error("email_in_use");
+    const { hash, salt } = hashPassword(password);
+    const now = isoNow();
+    const user: StoredUser = {
+      id: uuid(),
+      email,
+      full_name: fullName,
+      plan: "starter",
+      email_verified: false,
+      created_at: now,
+      last_seen_at: now,
+      password_hash: hash,
+      password_salt: salt,
+    };
+    this.users.set(user.id, user);
+    this.usersByEmail.set(email, user.id);
+    this.userApps.set(user.id, []);
+    this.userCarts.set(user.id, { items: [], promo_code: null, discount_pct: 0 });
+    this.userSubscriptions.set(user.id, []);
+    this.userPayments.set(user.id, []);
+    this.userInvoices.set(user.id, []);
+    return user;
+  }
+
+  createUserFromGoogle(input: {
+    email: string;
+    full_name: string;
+    google_uid: string;
+    email_verified: boolean;
+  }): StoredUser {
+    const email = (input.email ?? "").trim().toLowerCase();
+    const fullName = (input.full_name ?? "").trim();
+    const googleUid = (input.google_uid ?? "").trim();
+    if (!isValidEmail(email)) throw new Error("invalid_email");
+    if (!fullName) throw new Error("invalid_full_name");
+    if (!googleUid) throw new Error("invalid_google_uid");
+    if (this.usersByEmail.has(email)) throw new Error("email_in_use");
+    if (this.usersByGoogleUid.has(googleUid)) throw new Error("google_uid_in_use");
+    const randomPw = crypto.randomBytes(48).toString("hex");
+    const { hash, salt } = hashPassword(randomPw);
+    const now = isoNow();
+    const user: StoredUser = {
+      id: uuid(),
+      email,
+      full_name: fullName,
+      plan: "starter",
+      email_verified: input.email_verified,
+      created_at: now,
+      last_seen_at: now,
+      password_hash: hash,
+      password_salt: salt,
+      google_uid: googleUid,
+      email_verification_token: undefined,
+    };
+    this.users.set(user.id, user);
+    this.usersByEmail.set(email, user.id);
+    this.usersByGoogleUid.set(googleUid, user.id);
+    this.userApps.set(user.id, []);
+    this.userCarts.set(user.id, { items: [], promo_code: null, discount_pct: 0 });
+    this.userSubscriptions.set(user.id, []);
+    this.userPayments.set(user.id, []);
+    this.userInvoices.set(user.id, []);
+    return user;
+  }
+
+  findUserByGoogleUid(uid: string): StoredUser | undefined {
+    const id = this.usersByGoogleUid.get((uid ?? "").trim());
+    if (!id) return undefined;
+    return this.users.get(id);
+  }
+
+  findUserByEmail(email: string): StoredUser | undefined {
+    const id = this.usersByEmail.get((email ?? "").trim().toLowerCase());
+    if (!id) return undefined;
+    return this.users.get(id);
+  }
+
+  findUserById(id: string): StoredUser | undefined {
+    return this.users.get(id);
+  }
+
+  /** Bumps session activity time (auth routes + `/api/auth/me`). */
+  touchUserLastSeen(userId: string): void {
+    const u = this.users.get(userId);
+    if (!u) return;
+    u.last_seen_at = isoNow();
+  }
+
+  updateUser(id: string, patch: Partial<StoredUser>): StoredUser {
+    const u = this.users.get(id);
+    if (!u) throw new Error("not_found");
+    if (typeof patch.email === "string") {
+      const next = patch.email.trim().toLowerCase();
+      if (next && next !== u.email) {
+        if (!isValidEmail(next)) throw new Error("invalid_email");
+        if (this.usersByEmail.has(next)) throw new Error("email_in_use");
+        this.usersByEmail.delete(u.email);
+        u.email = next;
+        this.usersByEmail.set(next, u.id);
+      }
+    }
+    const stringFields = [
+      "full_name",
+      "phone",
+      "location",
+      "website",
+      "bio",
+    ] as const;
+    for (const k of stringFields) {
+      const v = patch[k];
+      if (typeof v === "string") (u as Record<string, unknown>)[k] = v.trim();
+    }
+    if (typeof patch.email_verified === "boolean") u.email_verified = patch.email_verified;
+    if (typeof patch.google_uid === "string") {
+      const nextUid = patch.google_uid.trim();
+      if (u.google_uid && u.google_uid !== nextUid) {
+        this.usersByGoogleUid.delete(u.google_uid);
+      }
+      if (nextUid) {
+        const holder = this.usersByGoogleUid.get(nextUid);
+        if (holder && holder !== u.id) throw new Error("google_uid_in_use");
+        this.usersByGoogleUid.set(nextUid, u.id);
+        u.google_uid = nextUid;
+      } else {
+        delete u.google_uid;
+      }
+    }
+    if (typeof patch.password_hash === "string") u.password_hash = patch.password_hash;
+    if (typeof patch.password_salt === "string") u.password_salt = patch.password_salt;
+    if ("reset_token" in patch) u.reset_token = patch.reset_token;
+    if ("reset_token_exp" in patch) u.reset_token_exp = patch.reset_token_exp;
+    if ("email_verification_token" in patch) {
+      u.email_verification_token = patch.email_verification_token;
+    }
+    if (
+      patch.plan === "starter" ||
+      patch.plan === "pro" ||
+      patch.plan === "business" ||
+      patch.plan === "enterprise"
+    ) {
+      u.plan = patch.plan;
+    }
+    return u;
+  }
+
+  /** Strip secret fields from a stored user before returning to the API caller. */
+  publicUser(u: StoredUser): AuthUser {
+    return {
+      id: u.id,
+      email: u.email,
+      full_name: u.full_name,
+      plan: u.plan,
+      email_verified: u.email_verified,
+      created_at: u.created_at,
+      phone: u.phone,
+      location: u.location,
+      website: u.website,
+      bio: u.bio,
+    };
+  }
+
+  findUserByResetToken(token: string): StoredUser | undefined {
+    if (!token) return undefined;
+    const now = Date.now();
+    for (const u of this.users.values()) {
+      if (
+        u.reset_token === token &&
+        typeof u.reset_token_exp === "number" &&
+        u.reset_token_exp > now
+      ) {
+        return u;
+      }
+    }
+    return undefined;
+  }
+
+  findUserByVerificationToken(token: string): StoredUser | undefined {
+    if (!token) return undefined;
+    for (const u of this.users.values()) {
+      if (u.email_verification_token === token) return u;
+    }
+    return undefined;
+  }
+
+  // --- Customer-scoped apps & builds ---
+
+  /**
+   * Return (or create) the auto-managed "Public builder" app row for a user.
+   * Used by `POST /api/builder/builds` so each authenticated build is owned
+   * by a real app row in the existing apps store.
+   */
+  getOrCreatePublicBuilderApp(userId: string): AndroidApp {
+    const owned = this.userApps.get(userId) ?? [];
+    for (const id of owned) {
+      const app = this.apps.get(id);
+      if (app && app.name === "Public builder") return app;
+    }
+    const app = this.createApp({
+      name: "Public builder",
+      package_name: `com.apkzio.user${userId.slice(0, 8).replace(/-/g, "")}`,
+      icon_glyph: "PB",
+      icon_color: "from-lime-500/20 to-lime-500/5",
+    });
+    owned.push(app.id);
+    this.userApps.set(userId, owned);
+    return app;
+  }
+
+  listUserApps(userId: string): AndroidApp[] {
+    const ids = this.userApps.get(userId) ?? [];
+    return ids
+      .map((id) => this.apps.get(id))
+      .filter((a): a is AndroidApp => Boolean(a));
+  }
+
+  listUserBuilds(userId: string): ApkBuild[] {
+    return this.builds
+      .filter((b) => b.user_id === userId)
+      .sort((a, b) => +new Date(b.build_started_at) - +new Date(a.build_started_at));
+  }
+
+  // --- Cart / billing ---
+
+  getCart(userId: string): Cart {
+    let c = this.userCarts.get(userId);
+    if (!c) {
+      c = { items: [], promo_code: null, discount_pct: 0 };
+      this.userCarts.set(userId, c);
+    }
+    return c;
+  }
+
+  addCartItem(
+    userId: string,
+    input: { name: string; description?: string; price: number; quantity?: number },
+  ): Cart {
+    const cart = this.getCart(userId);
+    const name = (input.name ?? "").trim();
+    if (!name) throw new Error("invalid_request");
+    const price = Number(input.price);
+    if (!Number.isFinite(price) || price < 0) throw new Error("invalid_request");
+    const qty = Math.max(1, Math.floor(Number(input.quantity ?? 1)));
+    cart.items.push({
+      id: uuid(),
+      name,
+      description: (input.description ?? "").toString(),
+      price,
+      quantity: qty,
+      added_at: isoNow(),
+    });
+    return cart;
+  }
+
+  updateCartItem(userId: string, itemId: string, quantity: number): Cart {
+    const cart = this.getCart(userId);
+    const item = cart.items.find((x) => x.id === itemId);
+    if (!item) throw new Error("not_found");
+    const q = Math.floor(Number(quantity));
+    if (!Number.isFinite(q) || q < 0) throw new Error("invalid_request");
+    if (q === 0) {
+      cart.items = cart.items.filter((x) => x.id !== itemId);
+    } else {
+      item.quantity = q;
+    }
+    return cart;
+  }
+
+  removeCartItem(userId: string, itemId: string): Cart {
+    const cart = this.getCart(userId);
+    const before = cart.items.length;
+    cart.items = cart.items.filter((x) => x.id !== itemId);
+    if (cart.items.length === before) throw new Error("not_found");
+    return cart;
+  }
+
+  applyPromo(userId: string, code: string): Cart {
+    const cart = this.getCart(userId);
+    const trimmed = (code ?? "").trim().toUpperCase();
+    if (trimmed === "APKZIO10") {
+      cart.promo_code = trimmed;
+      cart.discount_pct = 10;
+      return cart;
+    }
+    throw new Error("invalid_promo");
+  }
+
+  checkout(userId: string): Invoice {
+    const cart = this.getCart(userId);
+    if (cart.items.length === 0) throw new Error("empty_cart");
+    const subtotal = cart.items.reduce((s, x) => s + x.price * x.quantity, 0);
+    const discount = Math.round(subtotal * (cart.discount_pct / 100) * 100) / 100;
+    const total = Math.round((subtotal - discount) * 100) / 100;
+    this.invoiceCounter += 1;
+    const number = `INV-${this.invoiceCounter}`;
+    const invoice: Invoice = {
+      id: uuid(),
+      number,
+      user_id: userId,
+      total,
+      subtotal,
+      discount,
+      status: "paid",
+      paid_at: isoNow(),
+      created_at: isoNow(),
+      items: cart.items.map((x) => ({
+        name: x.name,
+        description: x.description,
+        price: x.price,
+        quantity: x.quantity,
+      })),
+    };
+    const invoices = this.userInvoices.get(userId) ?? [];
+    invoices.unshift(invoice);
+    this.userInvoices.set(userId, invoices);
+
+    const payment: Payment = {
+      id: uuid(),
+      user_id: userId,
+      amount: total,
+      status: "succeeded",
+      method: "card",
+      created_at: isoNow(),
+      invoice_id: invoice.id,
+    };
+    const payments = this.userPayments.get(userId) ?? [];
+    payments.unshift(payment);
+    this.userPayments.set(userId, payments);
+
+    const subs = this.userSubscriptions.get(userId) ?? [];
+    for (const item of cart.items) {
+      if (/plan/i.test(item.name)) {
+        subs.unshift({
+          id: uuid(),
+          user_id: userId,
+          plan_name: item.name,
+          status: "active",
+          started_at: isoNow(),
+          amount: item.price * item.quantity,
+        });
+      }
+    }
+    this.userSubscriptions.set(userId, subs);
+
+    cart.items = [];
+    cart.promo_code = null;
+    cart.discount_pct = 0;
+    return invoice;
+  }
+
+  listSubscriptions(userId: string): Subscription[] {
+    return [...(this.userSubscriptions.get(userId) ?? [])];
+  }
+
+  listPayments(userId: string): Payment[] {
+    return [...(this.userPayments.get(userId) ?? [])];
+  }
+
+  listInvoices(userId: string): Invoice[] {
+    return [...(this.userInvoices.get(userId) ?? [])];
+  }
+
+  adminAccountStatusForUser(userId: string): AdminClientAccountStatus {
+    const u = this.users.get(userId);
+    if (!u) return "lead";
+    const subs = this.listSubscriptions(userId);
+    const hasActive = subs.some((s) => s.status === "active");
+    if (hasActive) return "active";
+    const hadCancelled = subs.some((s) => s.status === "cancelled");
+    if (hadCancelled) return "churned";
+    const apps = this.userApps.get(userId) ?? [];
+    if (apps.length > 0) return "active";
+    return "lead";
+  }
+
+  adminClientSummaryForUser(u: StoredUser): AdminClientSummary {
+    const apps = this.userApps.get(u.id) ?? [];
+    const builds = this.builds.filter((b) => b.user_id === u.id);
+    const subs = this.listSubscriptions(u.id);
+    const activeSubs = subs.filter((s) => s.status === "active").length;
+    const payments = this.listPayments(u.id);
+    const lifetimeRevenue = payments
+      .filter((p) => p.status === "succeeded")
+      .reduce((sum, p) => sum + p.amount, 0);
+    return {
+      id: u.id,
+      email: u.email,
+      full_name: u.full_name,
+      plan: u.plan,
+      email_verified: u.email_verified,
+      created_at: u.created_at,
+      last_seen_at: u.last_seen_at ?? null,
+      google_linked: Boolean(u.google_uid),
+      apps_count: apps.length,
+      builds_count: builds.length,
+      active_subscriptions: activeSubs,
+      lifetime_revenue: lifetimeRevenue,
+      account_status: this.adminAccountStatusForUser(u.id),
+    };
+  }
+
+  listAdminClients(opts: {
+    q?: string;
+    plan?: string;
+    status?: AdminClientAccountStatus;
+    google_linked?: boolean;
+    offset: number;
+    limit: number;
+  }): { total: number; clients: AdminClientSummary[] } {
+    const q = (opts.q ?? "").trim().toLowerCase();
+    const planRaw = (opts.plan ?? "").trim().toLowerCase();
+    const planOk =
+      planRaw === "starter" ||
+      planRaw === "pro" ||
+      planRaw === "business" ||
+      planRaw === "enterprise";
+
+    let rows = [...this.users.values()].map((u) => this.adminClientSummaryForUser(u));
+    if (q) {
+      rows = rows.filter(
+        (c) =>
+          c.email.includes(q) ||
+          c.full_name.toLowerCase().includes(q) ||
+          c.id.toLowerCase().includes(q),
+      );
+    }
+    if (planOk) {
+      rows = rows.filter((c) => c.plan === planRaw);
+    }
+    if (opts.status === "lead" || opts.status === "active" || opts.status === "churned") {
+      rows = rows.filter((c) => c.account_status === opts.status);
+    }
+    if (opts.google_linked === true) {
+      rows = rows.filter((c) => c.google_linked);
+    }
+    if (opts.google_linked === false) {
+      rows = rows.filter((c) => !c.google_linked);
+    }
+    rows.sort((a, b) => {
+      const tb = b.last_seen_at ? +new Date(b.last_seen_at) : 0;
+      const ta = a.last_seen_at ? +new Date(a.last_seen_at) : 0;
+      if (tb !== ta) return tb - ta;
+      return +new Date(b.created_at) - +new Date(a.created_at);
+    });
+    const total = rows.length;
+    const slice = rows.slice(opts.offset, opts.offset + opts.limit);
+    return { total, clients: slice };
+  }
+
+  listContactMessagesForClientEmail(email: string): ContactMessage[] {
+    const e = (email ?? "").trim().toLowerCase();
+    if (!e) return [];
+    return this.contactMessages.filter((m) => m.email.toLowerCase() === e).slice(0, 40);
+  }
+
+  getAdminClientDetail(userId: string): AdminClientDetail | null {
+    const u = this.findUserById(userId);
+    if (!u) return null;
+    const summary = this.adminClientSummaryForUser(u);
+    const appIds = this.userApps.get(u.id) ?? [];
+    const apps: AdminClientAppRow[] = [];
+    for (const id of appIds) {
+      const ap = this.apps.get(id);
+      if (!ap) continue;
+      apps.push({
+        id: ap.id,
+        name: ap.name,
+        package_name: ap.package_name,
+        status: ap.status,
+        created_at: ap.created_at,
+      });
+    }
+    const builds = this.builds
+      .filter((b) => b.user_id === u.id)
+      .slice(0, 80)
+      .map(
+        (b): AdminClientBuildRow => ({
+          id: b.id,
+          app_id: b.app_id,
+          version_name: b.version_name,
+          version_code: b.version_code,
+          status: b.status,
+          build_started_at: b.build_started_at,
+          build_completed_at: b.build_completed_at,
+        }),
+      );
+    const cart = this.userCarts.get(u.id) ?? { items: [], promo_code: null, discount_pct: 0 };
+    return {
+      summary,
+      profile: this.publicUser(u),
+      apps,
+      builds,
+      subscriptions: this.listSubscriptions(u.id),
+      payments: this.listPayments(u.id).slice(0, 80),
+      invoices: this.listInvoices(u.id).slice(0, 80),
+      cart: {
+        items_count: cart.items.length,
+        promo_code: cart.promo_code,
+      },
+      contact_messages: this.listContactMessagesForClientEmail(u.email),
+    };
+  }
+
+  // --- Contact form ---
+
+  recordContactMessage(input: {
+    name: string;
+    email: string;
+    subject?: string | null;
+    message: string;
+    topic?: string | null;
+  }): ContactMessage {
+    const name = (input.name ?? "").trim();
+    const email = (input.email ?? "").trim().toLowerCase();
+    const message = (input.message ?? "").trim();
+    if (!name) throw new Error("invalid_name");
+    if (!isValidEmail(email)) throw new Error("invalid_email");
+    if (!message) throw new Error("invalid_message");
+    const row: ContactMessage = {
+      id: uuid(),
+      name,
+      email,
+      subject: input.subject ? String(input.subject).trim() || null : null,
+      message,
+      topic: input.topic ? String(input.topic).trim() || null : null,
+      created_at: isoNow(),
+    };
+    this.contactMessages.unshift(row);
+    return row;
   }
 
   analyticsOverview(seed: string): {
@@ -946,6 +2073,11 @@ function sha256hex(s: string): string {
   return crypto.createHash("sha256").update(s).digest("hex");
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(email: string): boolean {
+  return typeof email === "string" && EMAIL_RE.test(email);
+}
+
 function hash32(s: string): number {
   const h = crypto.createHash("sha256").update(s).digest();
   return h.readUInt32BE(0);
@@ -972,4 +2104,61 @@ function minutesAgoIso(rng: () => number, min: number, max: number): string {
 
 function minutesSince(iso: string): number {
   return (Date.now() - +new Date(iso)) / 60_000;
+}
+
+function deriveGlyph(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "AP";
+  if (parts.length === 1) {
+    const single = parts[0]!;
+    return single.slice(0, 2).toUpperCase();
+  }
+  return ((parts[0]![0] ?? "A") + (parts[1]![0] ?? "P")).toUpperCase();
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function synthesizeBuildLogs(build: ApkBuild): string[] {
+  const tag = (s: string) => `[${s}]`;
+  const stamp = build.build_started_at;
+  const lines: string[] = [
+    `${tag(stamp)} build ${build.id} accepted from dashboard`,
+    `${tag("info")} resolving sources for v${build.version_name} (versionCode=${build.version_code})`,
+    `${tag("gradle")} > Configure project :app`,
+    `${tag("gradle")} > Task :app:preBuild UP-TO-DATE`,
+    `${tag("gradle")} > Task :app:compileDebugKotlin`,
+  ];
+
+  if (build.status === "queued") {
+    lines.push(`${tag("info")} waiting for executor slot`);
+    lines.push(`${tag("info")} queue position: 1`);
+    lines.push(`${tag("info")} status=queued`);
+    return lines;
+  }
+
+  lines.push(`${tag("gradle")} > Task :app:processDebugResources`);
+  lines.push(`${tag("gradle")} > Task :app:mergeDebugAssets`);
+  lines.push(`${tag("gradle")} > Task :app:packageDebug`);
+
+  if (build.status === "building") {
+    lines.push(`${tag("info")} compiling - elapsed ${Math.round((Date.now() - +new Date(stamp)) / 1000)}s`);
+    lines.push(`${tag("info")} status=building`);
+    return lines;
+  }
+
+  if (build.status === "failed") {
+    lines.push(`${tag("error")} :app:lintVitalRelease FAILED`);
+    lines.push(`${tag("error")} build aborted after ${Math.round((build.duration_ms ?? 0) / 1000)}s`);
+    return lines;
+  }
+
+  lines.push(`${tag("info")} APK size ${formatBytes(build.size_bytes ?? 0)}`);
+  lines.push(`${tag("info")} uploaded artifact to ${build.output_url ?? "(none)"}`);
+  lines.push(`${tag("done")} BUILD SUCCESSFUL in ${Math.round((build.duration_ms ?? 0) / 1000)}s`);
+  return lines;
 }

@@ -1,4 +1,4 @@
-# PushCare Backend
+# ApkZio Backend
 
 A production-grade backend for app installation tracking, real-time analytics,
 and push notification delivery — combining the responsibilities of OneSignal,
@@ -58,7 +58,7 @@ backends/
 ├── *.sql                 ← Postgres migrations (001 … 005)
 ├── firebase-service/     ← FCM dispatcher (Node, package.json + src/)
 ├── local-api/            ← Dev-only in-memory HTTP API
-├── mnt/...               ← Reference Edge Function stubs (needs _shared on deploy)
+├── mnt/...               ← **Stale reference only** — historical Edge Function stubs; do not edit or deploy from here for production (use `supabase/functions/` in the repo root).
 └── utils.ts              ← Deno _shared helper reference (for Edge runtime)
 ```
 
@@ -87,21 +87,21 @@ backends/
 | POST   | `/push/send`            | `Authorization: Bearer sk_...` | Queue a push campaign (returns 202).      |
 | GET    | `/apps/stats`           | dashboard JWT          | Per-app aggregates over a range.                      |
 
-See [`docs/api.md`](./docs/api.md) for full request/response schemas.
+See [`api.md`](./api.md) for full request/response schemas.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/abdullahbabuofficial/pushcare.git
-cd pushcare-backend
+git clone https://github.com/abdullahbabuofficial/apkzio.git
+cd apkzio-backend
 
 # 1. Apply database migrations
 supabase link --project-ref <YOUR-REF>
 supabase db push
 
-# 2. Deploy edge functions
+# 2. Deploy edge functions (every function + --no-verify-jwt vs JWT: see deployment.md §3)
 supabase functions deploy sdk-init sdk-register-device sdk-heartbeat \
-                          sdk-event push-send push-track apps-stats
+                          sdk-event push-track push-send apps-stats
 
 # 3. Boot the FCM dispatcher
 cd firebase-service
@@ -112,7 +112,7 @@ npm install && npm run build && npm start
 cd ../local-api && npm install && npm run dev
 ```
 
-Production deployment guide: [`docs/deployment.md`](./docs/deployment.md).
+Production deployment guide: [`deployment.md`](./deployment.md).
 
 ## Performance targets
 
@@ -137,26 +137,6 @@ Production deployment guide: [`docs/deployment.md`](./docs/deployment.md).
 - **Rate limiting** at four tiers: per-(app_key, IP) on init,
   per-device on heartbeat/event, per-API-key on /push/send,
   per-device on /push/track.
-
-## Companion services
-
-The backend is the source of truth, but several siblings round out the
-platform:
-
-- **`backends/local-api/`** — an in-memory Express server that mirrors the
-  SDK + dashboard contract so the React admin can be developed without
-  Supabase credentials. Restarts wipe state. See
-  [`backends/local-api/README.md`](./local-api/README.md).
-- **`pushcare-admin/`** — the React/Vite admin console at the repo root.
-  Talks to either `local-api` (when `VITE_PUSHCARE_API_URL` is set) or the
-  production Edge functions via the Supabase JS client. See
-  [`pushcare-admin/README.md`](../pushcare-admin/README.md).
-- **APK build worker** *(roadmap)* — packs an SDK-bundled APK on demand. The
-  schema reserves `apk_builds` rows; the dispatcher pattern (queue-claim +
-  retry) carries over directly when the worker lands.
-- **Subscriber preference portal** *(roadmap)* — a thin static page where
-  end users manage their own opt-ins. Designed to consume the same
-  `/sdk/*` endpoints under a per-subscriber JWT.
 
 ## License
 

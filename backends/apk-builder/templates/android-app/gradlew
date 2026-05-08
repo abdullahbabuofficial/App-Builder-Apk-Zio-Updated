@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Lightweight wrapper. If $ANDROID_HOME and $JAVA_HOME are set, this
-# delegates to the host's `gradle` binary. The full Gradle wrapper jar
-# (gradle-wrapper.jar) is intentionally NOT shipped in source control —
-# generate it once with `gradle wrapper --gradle-version 8.7` if you
-# need offline builds.
-set -e
-exec gradle "$@"

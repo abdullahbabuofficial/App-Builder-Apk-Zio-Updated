@@ -1,5 +1,5 @@
 -- =====================================================================
--- PushCare :: 006_segments_team_webhooks_audit.sql
+-- ApkZio :: 006_segments_team_webhooks_audit.sql
 -- Extends the schema with the dashboard-surfaced features that have no
 -- backing tables yet: audience segments, team / RBAC, webhooks, audit
 -- log, and the billing primitives (plans, subscriptions, usage).

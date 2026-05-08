@@ -2,6 +2,16 @@
 //
 // POST /webhook-deliver
 //
+// Environment (Edge secrets / `supabase secrets set`):
+//   - SUPABASE_* / service-role: standard Supabase runtime (implicit).
+//   - WEBHOOK_SIGNING_SECRET — optional fallback HMAC-SHA256 key when the row’s
+//     `signing_secret` column is empty. Use for dev or after migrating secrets
+//     out of Postgres; callers’ verification story must match the key source.
+//
+// Signing key resolution order (backward compatible): (1) non-empty
+// `webhook_endpoints.signing_secret` from DB, (2) `WEBHOOK_SIGNING_SECRET`
+// from the environment.
+//
 // Worker-style endpoint that posts a signed event to a customer-defined
 // webhook_endpoints URL. Called by:
 //   - the dispatcher / cron job that drains the outbound webhook queue
@@ -130,15 +140,17 @@ serve(async (req) => {
   }
 
   // ---- Build signed request --------------------------------------
-  // TODO(prod): per-endpoint plaintext signing keys belong in a vault
-  // (Supabase Vault, AWS KMS, etc.). The DB column today stores a
-  // sha256 hash of the secret, which is one-way — receivers can't
-  // verify with it. Until the migration to vault-backed secrets
-  // lands, we use the bytea column as the raw HMAC key (same bytes
-  // both sides, stable, but not zero-knowledge against a DB read).
-  const signingKey = String(endpoint.signing_secret ?? '');
+  // Prefer the per-endpoint secret from the DB (existing dashboards / seeds).
+  // When empty, allow a vault-style secret injected as WEBHOOK_SIGNING_SECRET.
+  const fromDb = String(endpoint.signing_secret ?? '').trim();
+  const fromEnv = (Deno.env.get('WEBHOOK_SIGNING_SECRET') ?? '').trim();
+  const signingKey = fromDb || fromEnv;
   if (!signingKey) {
-    return errorResponse('missing_signing_secret', 'endpoint has no signing secret', 500);
+    return errorResponse(
+      'missing_signing_secret',
+      'endpoint has no signing_secret and WEBHOOK_SIGNING_SECRET is not set',
+      500,
+    );
   }
 
   const deliveryId = crypto.randomUUID();
@@ -153,10 +165,10 @@ serve(async (req) => {
 
   const headers: Record<string, string> = {
     'content-type': 'application/json',
-    'x-pushcare-event': body.event_type,
-    'x-pushcare-signature': `t=${timestamp},v1=${sig}`,
-    'x-pushcare-delivery-id': deliveryId,
-    'user-agent': 'PushCare-Webhook/1.0',
+    'x-apkzio-event': body.event_type,
+    'x-apkzio-signature': `t=${timestamp},v1=${sig}`,
+    'x-apkzio-delivery-id': deliveryId,
+    'user-agent': 'ApkZio-Webhook/1.0',
   };
 
   // ---- Attempt with retries --------------------------------------

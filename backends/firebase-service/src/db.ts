@@ -19,7 +19,7 @@ export const db = new Pool({
   max: Number(process.env.PG_POOL_MAX ?? 5),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
-  application_name: 'pushcare-dispatcher',
+  application_name: 'apkzio-dispatcher',
 });
 
 db.on('error', (err) => logger.error({ err }, 'pg_pool_error'));

@@ -1,6 +1,18 @@
-# PushCare end-to-end workflow
+# ApkZio end-to-end workflow
 
 This document ties together **subscriber acquisition**, **messaging**, and **operations** so you can grow from local demos to production (Supabase + FCM worker).
+
+> **Note:** `backends/mnt/` is **stale reference material** only (old stub paths). For production, use the root `supabase/functions/` tree and `_shared` there — do not treat `mnt/` as the source of truth.
+
+## 0. Stay aligned with your Supabase database (recommended)
+
+Use **one** `SUPABASE_PROJECT_REF` everywhere:
+
+1. Put secrets in `backends/.env`, `backends/firebase-service/.env`, `apkzio-admin/.env.local`, `apkzio-pub/.env.local` (see each `.env.example`).
+2. Print matching variable patterns: `make supabase-env-hints SUPABASE_PROJECT_REF=<ref>` from the repo root.
+3. Cursor MCP: replace `YOUR_PROJECT_REF` in `.cursor/mcp.json` (see `.cursor/README.md`) and complete the Supabase auth prompt.
+
+The **dispatcher** (`firebase-service`) must use a **direct** Postgres `DATABASE_URL` to that project; **local-api** stays in-memory unless you add a Postgres backend separately.
 
 ## 1. Local demo (fastest path)
 
@@ -12,8 +24,8 @@ backends/local-api ◄────────┘   GET/POST /api/*
 ```
 
 1. Start API: `cd backends/local-api && npm install && npm run dev` → `http://localhost:8787`
-2. Copy `.env.example` → `.env` in `pushcare-admin`, set `VITE_PUSHCARE_API_URL=http://localhost:8787`
-3. Start UI: `cd pushcare-admin && npm run dev`
+2. Copy `.env.example` → `.env` in `apkzio-admin`, set `VITE_APKZIO_API_URL=http://localhost:8787`
+3. Start UI: `cd apkzio-admin && npm run dev`
 4. Sign in with demo auth (any email/password).
 5. Open **Apps** → copy an app’s `app_key` (`pk_…`).
 6. Simulate installs:
@@ -30,7 +42,7 @@ curl -s -X POST http://localhost:8787/sdk/init \
 
 ```bash
 curl -s -X POST http://localhost:8787/push/send \
-  -H "Authorization: Bearer sk_live_demo_pushcare_local" \
+  -H "Authorization: Bearer sk_live_demo_apkzio_local" \
   -H "Content-Type: application/json" \
   -d "{\"app_id\":\"YOUR_APP_UUID\",\"title\":\"Hi\",\"body\":\"From curl\",\"target\":{\"type\":\"all\"}}"
 ```
@@ -43,8 +55,8 @@ Aligned with `backends/README.md` and `backends/api.md`:
 
 | Stage | Role |
 |-------|------|
-| **Supabase Postgres** | Source of truth: apps, devices, subscribers, campaigns queue, deliveries (SQL in `supabase/migrations/20260101000001_001_*.sql` … `20260101000006_006_*.sql`). |
-| **Edge Functions** | SDK ingress (`/sdk/*`), enqueue `/push/send`, `/push/track`, dashboard aggregates `/apps/stats`. Deno sources live under `supabase/functions/` and share `supabase/functions/_shared/utils.ts`. |
+| **Supabase Postgres** | Source of truth: apps, devices, subscribers, campaigns queue, deliveries (SQL in `001_*.sql` … `005_*.sql`). |
+| **Edge Functions** | SDK ingress (`/sdk/*`), enqueue `/push/send`, `/push/track`, dashboard aggregates `/apps/stats`. Deno examples live under `backends/mnt/user-data/outputs/apkzio-backend/supabase/functions/` — deploy needs `_shared/utils.ts` on Supabase. |
 | **firebase-service** | Node worker: `FOR UPDATE SKIP LOCKED` queue drain → FCM `sendEachForMulticast` → `push_record_delivery_batch`. |
 
 Recommended rollout:
@@ -52,11 +64,11 @@ Recommended rollout:
 1. Apply migrations (`supabase db push` or your Postgres runner).
 2. Deploy Edge Functions + configure secrets (`SUPABASE_URL`, service role, Firebase placeholders).
 3. Run **`backends/firebase-service`** with `DATABASE_URL` and `DEFAULT_FCM_CREDENTIALS` (or per-app credentials in DB).
-4. Point **`pushcare-admin`** at Supabase-authenticated APIs or your BFF that proxies JWT + REST.
+4. Point **`apkzio-admin`** at Supabase-authenticated APIs or your BFF that proxies JWT + REST.
 
 ## 3. Frontend integration toggle
 
-| `VITE_PUSHCARE_API_URL` | Behaviour |
+| `VITE_APKZIO_API_URL` | Behaviour |
 |-------------------------|-----------|
 | *(unset)* | Built-in mock datasets (`mock-data.ts`). Good for UI-only work. |
 | `http://localhost:8787` | Live reads/writes against **local-api** (same-origin CORS enabled). |
@@ -64,25 +76,7 @@ Recommended rollout:
 ## 4. What we completed in-repo
 
 - **`backends/local-api`**: REST surface for the dashboard + subset of SDK/server routes for integration testing.
-- **`pushcare-admin`**: `PushcareProvider` + `usePushcare()` wire lists, campaigns, keys, builds, devices, subscribers, and analytics to that API when configured.
+- **`apkzio-admin`**: `ApkzioProvider` + `useApkzio()` wire lists, campaigns, keys, builds, devices, subscribers, and analytics to that API when configured.
 - **`backends/firebase-service`**: Dispatcher sources consolidated under `firebase-service/` (see folder README in parent `README.md`).
 
-Next steps for full production: wire admin auth to Supabase JWT and replace local-api reads with `/apps/stats` + RLS-backed queries. (The Edge `_shared/utils.ts` helper now lives at `supabase/functions/_shared/utils.ts`.)
-
-## 5. End-to-end production rollout
-
-| Component | Runs as | Recommended host |
-| --- | --- | --- |
-| Postgres schema (`supabase/migrations/*.sql`) | Migrations + `pg_cron` | Supabase Pro project (Postgres 15, dedicated CPU, PITR) |
-| Edge functions (`/sdk/*`, `/push/*`, `/apps/stats`) | Deno runtime, scale-to-zero | Supabase Functions (same project as the database) |
-| FCM dispatcher (`backends/firebase-service`) | Long-lived Node worker pool, claims via `FOR UPDATE SKIP LOCKED` | Cloud Run / Fly.io / Railway, 2 + min instances, concurrency=1 |
-| Admin console (`pushcare-admin`) | Static React bundle (Vite build) | Any static-asset host — Apache (`deploy-pushcare-server.sh`), Cloudflare Pages, Netlify, Vercel |
-| Dev/test API (`backends/local-api`) | Express on a single Node process | Local machine only — *not* for production traffic |
-
-Suggested rollout order:
-
-1. `./deploy-supabase.sh` — links the project, applies migrations, deploys the edge fns, registers cron jobs.
-2. `./deploy-dispatcher.sh` — builds the Docker image and rolls out Cloud Run with secrets bound for `DATABASE_URL` and `DEFAULT_FCM_CREDENTIALS`.
-3. `./deploy-pushcare-server.sh` — provisions Apache + systemd for the admin console (and the local API if you want a staging mirror behind a private VPN).
-
-Smoke test recipe in `deployment.md` §6 verifies the entire chain end-to-end with one curl per layer.
+Next steps for full production: finish Edge `_shared` utilities in Supabase repo layout, wire admin auth to Supabase JWT, and replace local-api reads with `/apps/stats` + RLS-backed queries.

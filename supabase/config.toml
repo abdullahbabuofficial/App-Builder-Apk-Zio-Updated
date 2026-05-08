@@ -1,4 +1,4 @@
-# PushCare — Supabase CLI configuration.
+# ApkZio — Supabase CLI configuration.
 #
 # Reference: https://supabase.com/docs/reference/cli/config
 #
@@ -7,7 +7,7 @@
 
 # Used as project_id in Supabase Studio. Keep stable — changes here force
 # a full local-stack rebuild.
-project_id = "pushcare"
+project_id = "apkzio"
 
 [api]
 # PostgREST runs here when using the local stack.

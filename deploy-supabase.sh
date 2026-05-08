@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-supabase.sh — one-shot rollout of PushCare's Supabase tier.
+# deploy-supabase.sh — one-shot rollout of ApkZio's Supabase tier.
 #
 # Wraps the steps from `backends/deployment.md` §1–4:
 #   1. supabase link

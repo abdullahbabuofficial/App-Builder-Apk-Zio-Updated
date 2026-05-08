@@ -1,4 +1,4 @@
-# PushCare API Reference
+# ApkZio API Reference
 
 Base URL (Edge Functions):
 
@@ -26,7 +26,7 @@ All requests are JSON. All responses include `ok: boolean`. On error, responses 
 
 ### `POST /sdk/init`
 
-Called once per cold start, and the first time an install ever talks to PushCare. Idempotent on `(app_key, android_id)`.
+Called once per cold start, and the first time an install ever talks to ApkZio. Idempotent on `(app_key, android_id)`.
 
 Headers:
 
@@ -195,7 +195,7 @@ Enqueue a campaign. Returns immediately with `202 Accepted`; the dispatcher work
 Headers:
 
 ```
-Authorization: Bearer sk_live_<YOUR-SERVICE-KEY>
+Authorization: Bearer sk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 Content-Type: application/json
 ```
 
@@ -297,6 +297,26 @@ Response `200` (cached 30s, `cache-control: private`):
   ]
 }
 ```
+
+---
+
+## URL → APK builder (`backends/local-api`)
+
+The **pub** “create app” flow calls this when `VITE_APKZIO_API_URL` targets the Node **local-api** (distinct from the Supabase Edge base URL at the top of this doc).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/builder/builds` | Queue a WebView build (`website_url`, `app_name`, `package_name`, …) |
+| `GET` | `/api/builder/builds/:id` | Poll `build_status`, `source_zip_url`, `apk_url` |
+
+Artifacts (when the build succeeds):
+
+- `GET /artifacts/:buildId/source.zip`
+- `GET /artifacts/:buildId/app-debug.apk` — **debug APK for direct install**; requires **JDK 17** and **Android SDK** with API **34** on the API host. The shipped template includes **`gradlew`** + the Gradle wrapper JAR (8.10.x), so an outdated system `gradle` package does not block the build.
+
+`GET /api/status` exposes `features.apk_gradle_pipeline` and `apk_pipeline_hint` when APK output is unavailable.
+
+**Verify:** `make verify-apk-builder` (offline). **Full Gradle proof:** `ANDROID_HOME=… npm run e2e:assemble` in `backends/local-api` (also run in CI).
 
 ---
 

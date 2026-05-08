@@ -1,0 +1,142 @@
+stages:
+  - validate
+  - build
+  - test
+
+variables:
+  NODE_VERSION: "20"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .npm/
+    - .gradle/
+
+admin:lint:
+  stage: validate
+  image: node:20
+  rules:
+    - changes:
+        - apkzio-admin/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd apkzio-admin
+    - npm ci
+  script:
+    - npm run lint
+    - npm run verify:ui
+
+admin:build:
+  stage: build
+  image: node:20
+  needs:
+    - admin:lint
+  rules:
+    - changes:
+        - apkzio-admin/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd apkzio-admin
+    - npm ci
+  script:
+    - npm run build
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - apkzio-admin/dist/
+
+local-api:test:
+  stage: test
+  image: node:20
+  rules:
+    - changes:
+        - backends/local-api/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd backends/local-api
+    - npm ci
+  script:
+    - npm run lint
+    - npm run build
+    - npm run test
+
+local-api:apk-e2e:
+  stage: test
+  image: node:20-bookworm
+  rules:
+    - changes:
+        - backends/local-api/**/*
+        - .gitlab-ci.yml
+  variables:
+    ANDROID_HOME: "$CI_PROJECT_DIR/.android-sdk"
+    ANDROID_SDK_ROOT: "$CI_PROJECT_DIR/.android-sdk"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends openjdk-17-jdk wget unzip
+    - mkdir -p "$ANDROID_HOME/cmdline-tools"
+    - wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/android-commandline-tools.zip
+    - unzip -q /tmp/android-commandline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
+    - mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+    - export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+    - yes | sdkmanager --licenses >/dev/null || true
+    - sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+    - cd backends/local-api
+    - npm ci
+  script:
+    - export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+    - npm run e2e:assemble
+
+firebase-service:test:
+  stage: test
+  image: node:20
+  rules:
+    - changes:
+        - backends/firebase-service/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd backends/firebase-service
+    - npm ci
+  script:
+    - npm run lint
+    - npm run build
+    - npm run test
+
+public-site:build:
+  stage: build
+  image: node:20
+  rules:
+    - changes:
+        - apkzio-pub/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd apkzio-pub
+    - npm ci
+  script:
+    - npm run build
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - apkzio-pub/dist/
+
+android-sdk:assemble:
+  stage: build
+  image: eclipse-temurin:17-jdk
+  rules:
+    - changes:
+        - sdk/android/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends unzip wget
+    - cd sdk/android
+  script:
+    - ./gradlew :apkzio-sdk:assembleRelease --no-daemon
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - sdk/android/**/build/outputs/**/*.aar

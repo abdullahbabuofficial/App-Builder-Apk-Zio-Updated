@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Generic placeholder foreground for the adaptive launcher icon. Replace this
+  with your own artwork — the safe area for adaptive icons is the inner 66dp
+  square of a 108dp viewport.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.85"
+        android:pathData="M54,30
+                          L78,78
+                          L30,78 Z" />
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.6"
+        android:pathData="M44,60 H64 V72 H44 Z" />
+</vector>

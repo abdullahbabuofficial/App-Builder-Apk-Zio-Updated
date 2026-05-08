@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build for the PushCare FCM dispatcher.
+# Multi-stage build for the ApkZio FCM dispatcher.
 #
 # Stage 1: install deps + compile TypeScript.
 # Stage 2: production image — only deps and compiled JS, no toolchain.

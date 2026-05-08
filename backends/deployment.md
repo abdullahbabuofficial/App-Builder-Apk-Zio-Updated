@@ -1,4 +1,4 @@
-# PushCare — Deployment Guide
+# ApkZio — Deployment Guide
 
 End-to-end recipe to bring up a production environment from scratch. Every step is idempotent unless noted.
 
@@ -43,7 +43,7 @@ supabase link --project-ref <your-ref>
 supabase db push
 ```
 
-`supabase db push` runs the six migration files in order (under `supabase/migrations/`):
+`supabase db push` runs every SQL file in `supabase/migrations/` in filename order (six files today):
 
 ```
 20260101000001_001_core_schema.sql              – tenant tables, install hashes, sharded counters
@@ -51,7 +51,7 @@ supabase db push
 20260101000003_003_functions.sql                – SECURITY DEFINER RPCs called by edge fns + worker
 20260101000004_004_rls_policies.sql             – row-level security + redacted views
 20260101000005_005_views_and_cron.sql           – daily rollups + maintenance jobs
-20260101000006_006_segments_team_webhooks_audit.sql – segments / team / webhooks / audit / billing primitives
+20260101000006_006_segments_team_webhooks_audit.sql – segments, team invites, webhooks, audit
 ```
 
 Sanity check:
@@ -86,23 +86,26 @@ select jobname, schedule, active from cron.job where jobname like 'pc_%';
 
 ## 3. Deploy edge functions
 
+JWT verification matches `[functions.*] verify_jwt` in `supabase/config.toml`: omit `--no-verify-jwt` when `verify_jwt = true` (dashboard callers send the user’s Supabase JWT); add `--no-verify-jwt` when `verify_jwt = false` (SDK / server-to-server auth).
+
 ```bash
+# verify_jwt = false
 supabase functions deploy sdk-init             --no-verify-jwt
-supabase functions deploy sdk-register-device  --no-verify-jwt
-supabase functions deploy sdk-heartbeat        --no-verify-jwt
-supabase functions deploy sdk-event            --no-verify-jwt
-supabase functions deploy push-track           --no-verify-jwt
-supabase functions deploy push-send            --no-verify-jwt
-supabase functions deploy signup-init          --no-verify-jwt
-supabase functions deploy webhook-deliver      --no-verify-jwt
-supabase functions deploy apk-build-trigger    --no-verify-jwt
-supabase functions deploy team-invite          --no-verify-jwt
+supabase functions deploy sdk-register-device   --no-verify-jwt
+supabase functions deploy sdk-heartbeat         --no-verify-jwt
+supabase functions deploy sdk-event             --no-verify-jwt
+supabase functions deploy push-track            --no-verify-jwt
+supabase functions deploy push-send             --no-verify-jwt
+supabase functions deploy signup-init           --no-verify-jwt
+supabase functions deploy webhook-deliver       --no-verify-jwt
+
+# verify_jwt = true (caller must pass Authorization: Bearer <Supabase user JWT>)
 supabase functions deploy apps-stats
+supabase functions deploy apk-build-trigger
+supabase functions deploy team-invite
 ```
 
-Or run `./deploy-supabase.sh` from the repo root, which links the project, applies migrations, and deploys all of the above.
-
-> The SDK functions use `--no-verify-jwt` because the Android SDK authenticates with `X-PC-App-Key`, not a Supabase JWT. `apps-stats` is the only one that **requires** a JWT — it relies on RLS for tenant isolation.
+> SDK routes use `--no-verify-jwt` because the Android SDK uses `X-PC-App-Key` (or similar), not a Supabase session JWT. `apps-stats`, `apk-build-trigger`, and `team-invite` rely on the caller’s JWT and RLS for tenant isolation.
 
 The functions inherit `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` automatically. No extra secrets are required for them.
 
@@ -143,24 +146,24 @@ Keep the plaintext key in your secret manager — it is **not** recoverable from
 ## 5. Deploy the dispatcher
 
 ```bash
-cd firebase-service
+cd backends/firebase-service
 cp .env.example .env
 # fill in DATABASE_URL (direct connection), DEFAULT_FCM_CREDENTIALS (one-line JSON)
-docker build -t pushcare/dispatcher:latest .
+docker build -t apkzio/dispatcher:latest .
 ```
 
 ### Cloud Run example
 
 ```bash
-gcloud run deploy pushcare-dispatcher \
-  --image=gcr.io/<project>/pushcare-dispatcher:latest \
+gcloud run deploy apkzio-dispatcher \
+  --image=gcr.io/<project>/apkzio-dispatcher:latest \
   --region=asia-southeast1 \
   --min-instances=2 \
   --max-instances=20 \
   --concurrency=1 \
   --cpu=2 --memory=1Gi \
   --port=8080 \
-  --set-secrets=DATABASE_URL=pushcare-db-url:latest,DEFAULT_FCM_CREDENTIALS=pushcare-fcm:latest \
+  --set-secrets=DATABASE_URL=apkzio-db-url:latest,DEFAULT_FCM_CREDENTIALS=apkzio-fcm:latest \
   --set-env-vars=WORKER_CONCURRENCY=4,POLL_INTERVAL_MS=2000,LOG_LEVEL=info
 ```
 
@@ -172,7 +175,13 @@ For multi-tenant deployments, store each app's service-account JSON in `android_
 
 ```bash
 curl https://<your-dispatcher>/healthz
-# {"ok":true,"db":"ok","inflight":0,"uptime_sec":42}
+# {"ok":true,"service":"apkzio-firebase-dispatcher","inflight":0}
+
+# Equivalent liveness path (matches apkzio-local-api convention):
+curl https://<your-dispatcher>/health
+
+# Safe capability JSON for dashboards (Postgres reachability, FCM env, worker slots):
+curl -s https://<your-dispatcher>/api/status
 ```
 
 ---
@@ -180,14 +189,14 @@ curl https://<your-dispatcher>/healthz
 ## 6. Smoke test end-to-end
 
 ```bash
-# 1. Init a fake device
-curl -sX POST https://<ref>.functions.supabase.co/sdk-init \
+# 1. Init a fake device (canonical Supabase Functions URL)
+curl -sX POST https://<project-ref>.supabase.co/functions/v1/sdk-init \
   -H "X-PC-App-Key: pk_…" \
   -H "Content-Type: application/json" \
   -d '{"android_id":"deadbeef0001","fcm_token":"FAKE","country_code":"BD"}'
 
 # 2. Send a test push
-curl -sX POST https://<ref>.functions.supabase.co/push-send \
+curl -sX POST https://<project-ref>.supabase.co/functions/v1/push-send \
   -H "Authorization: Bearer sk_live_…" \
   -H "Content-Type: application/json" \
   -d '{
@@ -208,8 +217,8 @@ curl -sX POST https://<ref>.functions.supabase.co/push-send \
 
 The SDK only needs:
 
-- `app_key` (`pk_…`) compiled into `BuildConfig` or read from `assets/pushcare.json`.
-- `base_url` = `https://<ref>.functions.supabase.co`.
+- `app_key` (`pk_…`) compiled into `BuildConfig` or read from `assets/apkzio.json`.
+- `base_url` = `https://<project-ref>.supabase.co/functions/v1` (append nothing — function names are path segments, e.g. `/sdk-init`).
 
 Recommended call sequence at app start:
 

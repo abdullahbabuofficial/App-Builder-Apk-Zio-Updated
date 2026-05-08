@@ -1,7 +1,23 @@
-# Large local artifacts — do not publish to GitHub
-pushcare-deploy.tar.gz
+# Large local artifacts — do not publish to Git
+apkzio-deploy.tar.gz
 *.tar.gz
 
+# Dependency/build outputs
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+.npm/
+.gradle/
+coverage/
+
 # Local env (if added at repo root)
-.env
 .env.local
+
+# Operator-only secrets (never commit)
+.secrets/
+*.secret.env
+
+# local-api build artifacts
+backends/local-api/.builds/

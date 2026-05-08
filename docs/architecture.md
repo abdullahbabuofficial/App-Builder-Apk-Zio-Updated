@@ -1,4 +1,4 @@
-# PushCare — Architecture
+# ApkZio — Architecture
 
 A single-page tour of how SDK pings flow into Postgres, how campaigns reach
 end devices, and which knobs scale as traffic patterns change.
@@ -6,7 +6,7 @@ end devices, and which knobs scale as traffic patterns change.
 ## The big picture
 
 ```
-                                   pushcare-admin (React)
+                                   apkzio-admin (React)
                                         ▲ HTTPS + JWT
                                         │
                        ┌────────────────┴───────────────┐
@@ -16,8 +16,8 @@ end devices, and which knobs scale as traffic patterns change.
         │  Supabase Edge Functions │    │  backends/local-api (dev)   │
         │   /sdk/init              │    │  In-memory mirror, no FCM   │
         │   /sdk/register-device   │    │  ───────────────────────    │
-        │   /sdk/heartbeat         │    │  Used by local pushcare-    │
-        │   /sdk/event             │    │  admin when VITE_PUSHCARE_  │
+        │   /sdk/heartbeat         │    │  Used by local apkzio-    │
+        │   /sdk/event             │    │  admin when VITE_APKZIO_  │
         │   /push/track            │    │  API_URL is set.            │
         │   /push/send             │    └─────────────────────────────┘
         │   /apps/stats            │
@@ -83,7 +83,7 @@ connections, retry budgets in seconds, and per-tenant credentials.
 
 ## Security model
 
-PushCare layers four kinds of credential, each with a narrow blast radius:
+ApkZio layers four kinds of credential, each with a narrow blast radius:
 
 | Credential | Holder | Scope | Storage |
 | --- | --- | --- | --- |

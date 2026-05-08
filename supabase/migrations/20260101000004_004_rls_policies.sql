@@ -1,5 +1,5 @@
 -- =====================================================================
--- PushCare :: 004_rls_policies.sql
+-- ApkZio :: 004_rls_policies.sql
 -- Row-level security.
 --
 -- Two access patterns:

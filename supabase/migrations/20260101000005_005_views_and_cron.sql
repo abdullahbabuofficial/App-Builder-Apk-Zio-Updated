@@ -1,5 +1,5 @@
 -- =====================================================================
--- PushCare :: 005_views_and_cron.sql
+-- ApkZio :: 005_views_and_cron.sql
 -- Materialized views for stats endpoints + pg_cron schedules.
 --
 -- Strategy: refresh hourly views CONCURRENTLY so they never block
