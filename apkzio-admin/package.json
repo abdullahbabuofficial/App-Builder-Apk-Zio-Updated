@@ -6,7 +6,8 @@
   "description": "ApkZio admin console — control plane for push, devices, campaigns, and analytics.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/validate-env.mjs && tsc -b && vite build",
+    "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "tsc -b --noEmit",
     "verify:ui": "node scripts/verify-admin-ui.mjs",

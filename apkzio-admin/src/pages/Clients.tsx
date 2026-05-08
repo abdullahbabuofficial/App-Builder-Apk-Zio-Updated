@@ -13,6 +13,7 @@ import * as api from "@/lib/api";
 import { ADMIN_CLIENTS_DEMO } from "@/lib/admin-clients-demo";
 import { apkzioApiHostname } from "@/lib/config";
 import { ClientsDirectorySkeleton } from "@/components/ui/Skeleton";
+import { EmptyState } from "@/components/ui/Misc";
 
 function csvCell(v: string | number | boolean | null | undefined): string {
   if (v === null || v === undefined) return "";
@@ -154,6 +155,27 @@ export function Clients() {
   }, [load]);
 
   const hostname = apkzioApiHostname();
+
+  if (dataSource !== "rest") {
+    return (
+      <>
+        <PageHeader
+          title="Clients"
+          description="Enterprise directory of customer accounts"
+        />
+        <EmptyState
+          icon={<Icon.Users size={20} />}
+          title="Admin Clients requires REST API"
+          description="Client CRM endpoints are not available in mock or Supabase mode. Set VITE_APKZIO_DATA_SOURCE=rest and configure VITE_APKZIO_API_URL to access client management."
+          action={
+            <Link to="/settings">
+              <Button variant="primary">Configure API</Button>
+            </Link>
+          }
+        />
+      </>
+    );
+  }
 
   return (
     <>

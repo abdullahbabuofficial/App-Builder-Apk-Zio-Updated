@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import * as api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useApkzio } from "@/context/ApkzioDataContext";
-import { dailyInstalls, geoBreakdown, hourlyHeartbeats, recentEvents } from "@/lib/mock-data";
 import type { AnalyticsOverview } from "@/lib/api";
 import {
   fetchAppsStatsOverview,
@@ -16,34 +15,14 @@ export function useAnalyticsOverview(seed = "global") {
   const supabaseAnalytics = dataSource === "supabase";
   const [loading, setLoading] = useState(useLiveApi);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<AnalyticsOverview>(() =>
-    useLiveApi
-      ? {
-          dailyInstalls: [],
-          hourlyHeartbeats: [],
-          geoBreakdown: [],
-          recentEvents: [],
-        }
-      : {
-          dailyInstalls: dailyInstalls(30, seed),
-          hourlyHeartbeats: hourlyHeartbeats(48, seed),
-          geoBreakdown: geoBreakdown(seed),
-          recentEvents: recentEvents(seed),
-        },
-  );
+  const [data, setData] = useState<AnalyticsOverview>({
+    dailyInstalls: [],
+    hourlyHeartbeats: [],
+    geoBreakdown: [],
+    recentEvents: [],
+  });
 
   useEffect(() => {
-    if (!useLiveApi) {
-      setLoading(false);
-      setError(null);
-      setData({
-        dailyInstalls: dailyInstalls(30, seed),
-        hourlyHeartbeats: hourlyHeartbeats(48, seed),
-        geoBreakdown: geoBreakdown(seed),
-        recentEvents: recentEvents(seed),
-      });
-      return;
-    }
     if (supabaseAnalytics) {
       const token = session?.access_token;
       if (!token) {

@@ -8,7 +8,6 @@ import { StatusPill } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/lib/icons";
 import { compact, dateTime, pct, relTime } from "@/lib/format";
-import { dailyInstalls } from "@/lib/mock-data";
 import type { AndroidApp, Campaign } from "@/lib/mock-data";
 import { Tabs } from "@/components/ui/Tabs";
 import { useEffect, useState } from "react";
@@ -17,6 +16,7 @@ import { useAnalyticsOverview } from "@/hooks/useAnalyticsOverview";
 import { DashboardSkeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { apkzioApiHostname } from "@/lib/config";
+import { useAppTrends } from "@/hooks/useAppTrends";
 
 function csvCell(v: string | number | null | undefined): string {
   if (v === null || v === undefined) return "";
@@ -288,7 +288,7 @@ export function Dashboard() {
                       <td className="px-5 py-3">
                         <div className="ml-auto w-fit">
                           <Sparkline
-                            data={useLiveApi ? [] : dailyInstalls(14, a.id)}
+                            data={[]}
                             color={a.status === "paused" ? "#FFB547" : "#CDFF3F"}
                             width={88}
                             height={28}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -12,12 +12,12 @@ import { BarChart, Sparkline } from "@/components/charts/MiniCharts";
 import { Icon } from "@/lib/icons";
 import { commas, compact, dateTime, pct, relTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { dailyInstalls } from "@/lib/mock-data";
 import { useApkzio } from "@/context/ApkzioDataContext";
 import { useAnalyticsOverview } from "@/hooks/useAnalyticsOverview";
 import { useToast } from "@/components/ui/Toast";
 import { downloadCsv } from "@/lib/csv";
-import type { AnalyticsOverview } from "@/lib/api";
+import type { AnalyticsOverview, CrashAnalytics } from "@/lib/api";
+import { fetchCrashAnalytics } from "@/lib/api";
 
 export function Analytics() {
   const { apps, useLiveApi } = useApkzio();
@@ -26,6 +26,8 @@ export function Analytics() {
   const [range, setRange] = useState("30d");
   const [q, setQ] = useState("");
   const [selectedEvent, setSelectedEvent] = useState<AnalyticsOverview["recentEvents"][number] | null>(null);
+  const [crashAnalytics, setCrashAnalytics] = useState<CrashAnalytics | null>(null);
+  const [crashLoading, setCrashLoading] = useState(false);
 
   const seed = `ana-${appId}-${range}`;
   const overview = useAnalyticsOverview(seed);
@@ -39,6 +41,20 @@ export function Analytics() {
   const top = filtered.slice(0, 8);
   const totalEvents = filtered.reduce((s, e) => s + e.count, 0);
   const totalDevices = filtered.reduce((s, e) => s + e.uniqueDevices, 0);
+
+  // Fetch crash analytics when app changes
+  useEffect(() => {
+    if (!useLiveApi || appId === "all" || !appId) {
+      setCrashAnalytics(null);
+      return;
+    }
+    setCrashLoading(true);
+    const rangeMap = { "7d": "7d", "30d": "30d", "90d": "30d" } as const;
+    fetchCrashAnalytics(appId, rangeMap[range as keyof typeof rangeMap] ?? "7d")
+      .then(setCrashAnalytics)
+      .catch(() => setCrashAnalytics(null))
+      .finally(() => setCrashLoading(false));
+  }, [appId, range, useLiveApi]);
 
   return (
     <>
@@ -105,11 +121,33 @@ export function Analytics() {
         />
         <StatCard
           label="Crash rate"
-          value={useLiveApi ? "—" : "0.18"}
-          {...(useLiveApi ? {} : { unit: "%", deltaPct: -0.4 })}
-          hint={useLiveApi ? "not wired to live API" : "rolling 24h"}
+          value={
+            crashLoading
+              ? "…"
+              : useLiveApi && crashAnalytics
+                ? crashAnalytics.crash_rate.toFixed(2)
+                : useLiveApi
+                  ? "—"
+                  : "0.18"
+          }
+          {...(useLiveApi && crashAnalytics ? { unit: "%", deltaPct: -0.4 } : useLiveApi ? {} : { unit: "%", deltaPct: -0.4 })}
+          hint={
+            crashLoading
+              ? "loading…"
+              : useLiveApi && !crashAnalytics
+                ? appId === "all"
+                  ? "select an app"
+                  : "no crash data"
+                : useLiveApi
+                  ? `last ${range}`
+                  : "rolling 24h"
+          }
           trailing={
-            useLiveApi ? undefined : <Sparkline data={hb.slice(-24)} color="#FF8A4C" width={72} height={36} />
+            useLiveApi && crashAnalytics ? (
+              <Sparkline data={crashAnalytics.trend} color="#FF8A4C" width={72} height={36} />
+            ) : useLiveApi ? undefined : (
+              <Sparkline data={hb.slice(-24)} color="#FF8A4C" width={72} height={36} />
+            )
           }
         />
       </div>
@@ -157,7 +195,7 @@ export function Analytics() {
               </thead>
               <tbody>
                 {filtered.map((e, i) => {
-                  const trendData = useLiveApi ? [] : dailyInstalls(14, e.id);
+                  const trendData: number[] = [];
                   const isUp = e.deltaPct > 0;
                   return (
                     <tr key={e.id} className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
@@ -251,7 +289,7 @@ export function Analytics() {
             </div>
             <div className="rounded-lg border border-line-1 bg-ink-2/50 p-4">
               <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-bone-low">Trend</div>
-              <AreaChart data={useLiveApi ? installs : dailyInstalls(14, selectedEvent.id)} height={180} showAxis={false} />
+              <AreaChart data={installs} height={180} showAxis={false} />
             </div>
             <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3 font-mono text-[11px] text-bone-mid">
               <div>event_id: <span className="text-bone">{selectedEvent.id}</span></div>

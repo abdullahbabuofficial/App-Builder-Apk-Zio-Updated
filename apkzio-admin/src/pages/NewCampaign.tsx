@@ -12,7 +12,7 @@ import { Modal } from "@/components/ui/Modal";
 import { AndroidPreview } from "@/components/push/AndroidPreview";
 import { Icon } from "@/lib/icons";
 import { compact, commas, dateTime } from "@/lib/format";
-import { COUNTRIES, COUNTRY_NAMES } from "@/lib/mock-data";
+import { COUNTRIES, COUNTRY_NAMES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { useApkzio } from "@/context/ApkzioDataContext";
 

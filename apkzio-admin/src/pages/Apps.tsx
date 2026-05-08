@@ -9,11 +9,12 @@ import { StatusPill } from "@/components/ui/Badge";
 import { Sparkline } from "@/components/charts/MiniCharts";
 import { Icon } from "@/lib/icons";
 import { compact, pct, relTime } from "@/lib/format";
-import { dailyInstalls } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { useApkzio } from "@/context/ApkzioDataContext";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
+import { useAppTrends } from "@/hooks/useAppTrends";
+import type { AndroidApp } from "@/lib/mock-data";
 
 export function Apps() {
   const navigate = useNavigate();
@@ -134,51 +135,7 @@ export function Apps() {
       {view === "grid" ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filtered.map((a) => (
-            <Link
-              key={a.id}
-              to={`/apps/${a.id}`}
-              className="group relative overflow-hidden rounded-xl border border-line-1 bg-ink-1 p-5 transition-all hover:border-line-2 hover:shadow-raise"
-            >
-              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-signal/30 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={cn(
-                      "grid h-12 w-12 place-items-center rounded-lg bg-gradient-to-br font-mono text-[14px] font-medium text-bone",
-                      a.icon_color,
-                    )}
-                  >
-                    {a.icon_glyph}
-                  </div>
-                  <div>
-                    <div className="font-display text-[16px] font-semibold leading-tight text-bone">{a.name}</div>
-                    <div className="mt-0.5 font-mono text-[10px] text-bone-low">{a.package_name}</div>
-                  </div>
-                </div>
-                <StatusPill status={a.status} />
-              </div>
-
-              <div className="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-line-1">
-                <Cell label="Live" value={compact(a.live_users)} />
-                <Cell label="Active 24h" value={compact(a.active_devices_24h)} />
-                <Cell label="Installs" value={compact(a.total_installs)} />
-              </div>
-
-              <div className="mt-4 flex items-end justify-between">
-                <div>
-                  <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-bone-low">Delivery 7d</div>
-                  <div className="mt-0.5 font-display text-[18px] font-semibold text-ok num">{pct(a.delivery_rate * 100)}</div>
-                </div>
-                <Sparkline data={useLiveApi ? [] : dailyInstalls(14, a.id)} width={120} height={36} />
-              </div>
-
-              <div className="mt-4 flex items-center justify-between border-t border-line-1 pt-3 text-[11px] text-bone-low">
-                <span>Created {relTime(a.created_at)}</span>
-                <span className="inline-flex items-center gap-1 text-bone-mid group-hover:text-signal">
-                  Open <Icon.ArrowRight size={11} />
-                </span>
-              </div>
-            </Link>
+            <AppCard key={a.id} app={a} />
           ))}
         </div>
       ) : (
@@ -294,6 +251,57 @@ export function Apps() {
         </div>
       </Modal>
     </>
+  );
+}
+
+function AppCard({ app }: { app: AndroidApp }) {
+  const trends = useAppTrends(app.id, 14);
+  
+  return (
+    <Link
+      to={`/apps/${app.id}`}
+      className="group relative overflow-hidden rounded-xl border border-line-1 bg-ink-1 p-5 transition-all hover:border-line-2 hover:shadow-raise"
+    >
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-signal/30 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div
+            className={cn(
+              "grid h-12 w-12 place-items-center rounded-lg bg-gradient-to-br font-mono text-[14px] font-medium text-bone",
+              app.icon_color,
+            )}
+          >
+            {app.icon_glyph}
+          </div>
+          <div>
+            <div className="font-display text-[16px] font-semibold leading-tight text-bone">{app.name}</div>
+            <div className="mt-0.5 font-mono text-[10px] text-bone-low">{app.package_name}</div>
+          </div>
+        </div>
+        <StatusPill status={app.status} />
+      </div>
+
+      <div className="mt-5 grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-line-1">
+        <Cell label="Live" value={compact(app.live_users)} />
+        <Cell label="Active 24h" value={compact(app.active_devices_24h)} />
+        <Cell label="Installs" value={compact(app.total_installs)} />
+      </div>
+
+      <div className="mt-4 flex items-end justify-between">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-bone-low">Delivery 7d</div>
+          <div className="mt-0.5 font-display text-[18px] font-semibold text-ok num">{pct(app.delivery_rate * 100)}</div>
+        </div>
+        <Sparkline data={trends} width={120} height={36} />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-line-1 pt-3 text-[11px] text-bone-low">
+        <span>Created {relTime(app.created_at)}</span>
+        <span className="inline-flex items-center gap-1 text-bone-mid group-hover:text-signal">
+          Open <Icon.ArrowRight size={11} />
+        </span>
+      </div>
+    </Link>
   );
 }
 

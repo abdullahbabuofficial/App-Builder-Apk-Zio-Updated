@@ -11,7 +11,7 @@ import { Table, type Column } from "@/components/ui/Table";
 import { EmptyState } from "@/components/ui/Misc";
 import { Icon } from "@/lib/icons";
 import { commas, relTime } from "@/lib/format";
-import { COUNTRIES, COUNTRY_NAMES } from "@/lib/mock-data";
+import { COUNTRIES, COUNTRY_NAMES } from "@/lib/constants";
 import type { Device } from "@/lib/mock-data";
 import { useApkzio } from "@/context/ApkzioDataContext";
 import { useDevices } from "@/hooks/useAppCollections";

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/api";
 import { useApkzio } from "@/context/ApkzioDataContext";
-import { devicesFor, subscribersFor } from "@/lib/mock-data";
 import type { Device, Subscriber } from "@/lib/mock-data";
 import { supabaseFetchDevices, supabaseFetchSubscribers } from "@/lib/supabase/data";
 
@@ -29,12 +28,6 @@ export function useDevices(appId: string | undefined, sampleCount?: number): Col
   useEffect(() => {
     if (!appId) {
       setDevices([]);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    if (!useLiveApi) {
-      setDevices(devicesFor(appId, sampleCount ?? 80));
       setError(null);
       setLoading(false);
       return;
@@ -86,12 +79,6 @@ export function useSubscribers(appId: string | undefined, sampleCount?: number):
   useEffect(() => {
     if (!appId) {
       setRows([]);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    if (!useLiveApi) {
-      setRows(subscribersFor(appId, sampleCount ?? 60));
       setError(null);
       setLoading(false);
       return;

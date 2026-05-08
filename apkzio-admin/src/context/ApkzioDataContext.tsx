@@ -139,6 +139,16 @@ function syntheticApp(input: api.CreateAppInput): AndroidApp {
 
 export function ApkzioProvider({ children }: { children: ReactNode }) {
   const { signedIn, session, ready: authReady } = useAuth();
+  const configuredDataSource = import.meta.env.VITE_APKZIO_DATA_SOURCE || "mock";
+
+  // CRITICAL: Prevent mock mode in production
+  if (import.meta.env.PROD && configuredDataSource === "mock") {
+    throw new Error(
+      "FATAL: Mock data source is not allowed in production builds. " +
+      "Set VITE_APKZIO_DATA_SOURCE to 'rest' or 'supabase' in your .env.production file."
+    );
+  }
+
   const dataSource = resolveDataSource(Boolean(session?.user));
   const useLiveApi = dataSource !== "mock";
 
