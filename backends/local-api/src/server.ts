@@ -21,6 +21,9 @@ import {
   verifyToken,
   hashPassword,
 } from "./auth.js";
+import { createCheckoutSession, cancelSubscription, getSubscriptionDetails } from './billing-api.js';
+import { handleStripeWebhook } from './stripe-webhooks.js';
+import { BILLING_PLANS } from './billing-plans.js';
 import { hasAdminAccess, isAdminApiRoute } from "./security.js";
 import {
   buildResetPasswordEmail,
@@ -35,30 +38,106 @@ import {
 } from "./firebase-admin.js";
 import { buildPublicStatusPayload } from "./public-status.js";
 import { createBuilderRateLimitMiddleware } from "./builder-rate-limit.js";
+import type { AnalyticsEvent, EventBatch } from "./events.js";
+import { validateEvent, deduplicateEvents } from "./event-validator.js";
+import { EventBuffer } from "./event-buffer.js";
+import { apiLimiter, authLimiter, eventLimiter } from "./security/rate-limiter.js";
+import { setupSecurityHeaders } from "./security/headers.js";
+// import { setupCsrf } from "./security/csrf.js"; // Unused - commented out
+import { aggregator } from "./aggregator.js";
+import { getGeoBreakdown } from "./geo-aggregator.js";
+import publicSdkRoutes from "./routes/public-sdk.js";
+import {
+  getDailyInstalls,
+  getHourlyHeartbeats,
+  getAppSummary,
+  getPushStats,
+  getRecentEvents,
+  getGlobalAnalyticsOverview,
+  getCrashAnalytics as queryCrashAnalytics,
+  getCampaignErrors as queryCampaignErrors,
+  getEventTrend,
+} from "./analytics-queries.js";
+import { initSentry, sentryErrorHandler } from "./monitoring/sentry.js";
+// import { register } from "./monitoring/metrics.js"; // Unused - commented out
+// Remove unused health check import
+// import { checkHealth, checkDetailedHealth } from "./monitoring/health.js";
+import { metricsMiddleware } from "./monitoring/middleware.js";
 
 const _serverFileDir = path.dirname(fileURLToPath(import.meta.url));
-/** Repo `backends/.env` then package `local-api/.env` (second wins). Works for `tsx src/server.ts` and `node dist/server.js`. */
+/** Repo `backends/.env` then package `local-api/.env`. Second file wins (override), including over a stale `PORT` exported in the shell. */
 dotenv.config({ path: path.resolve(_serverFileDir, "../../.env") });
-dotenv.config({ path: path.resolve(_serverFileDir, "../.env") });
+dotenv.config({ path: path.resolve(_serverFileDir, "../.env"), override: true });
 
-const PORT = Number(process.env.PORT ?? 8787);
+const PORT = Number(process.env.PORT ?? 3001);
 const DEMO_SERVICE_KEY = process.env.APKZIO_SERVICE_KEY ?? "sk_live_demo_apkzio_local";
 const ENFORCE_ADMIN_AUTH =
   (process.env.ENFORCE_ADMIN_AUTH ?? (process.env.NODE_ENV === "production" ? "1" : "0")) === "1";
 const ADMIN_API_KEY = process.env.APKZIO_ADMIN_API_KEY ?? DEMO_SERVICE_KEY;
+const USE_DATABASE = process.env.USE_DATABASE === "true";
 
-const store = new ApkZioStore(DEMO_SERVICE_KEY);
+// Initialize database if USE_DATABASE=true
+if (USE_DATABASE) {
+  const { runMigrations } = await import("./migrate.js");
+  const { pool } = await import("./db.js");
+  
+  console.log('🔌 Connecting to database...');
+  await pool.query('SELECT 1');
+  console.log('✅ Database connected');
+  
+  console.log('🔄 Running migrations...');
+  await runMigrations();
+  console.log('✅ Migrations complete');
+}
+
+const store = new ApkZioStore(DEMO_SERVICE_KEY, USE_DATABASE);
 const buildRunner = new BuildRunner(store);
 
 const builderRateLimit = createBuilderRateLimitMiddleware();
+
+// Event buffer for analytics ingestion
+const eventBuffer = new EventBuffer({
+  maxSize: 1000,
+  flushIntervalMs: 5000,
+  onFlush: async (events: AnalyticsEvent[]) => {
+    store.insertEvents(events);
+  },
+});
+
+// Create event rate limiter (100 requests per minute per IP)
+import { createFixedWindowLimiter } from "./builder-rate-limit.js";
+const eventRateLimiter = createFixedWindowLimiter(100, 60000);
+
+function eventRateLimitMiddleware(): express.RequestHandler {
+  return (req, res, next): void => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!eventRateLimiter(ip)) {
+      res.status(429).json({
+        ok: false,
+        error: {
+          code: "rate_limited",
+          message: "Too many event requests. Try again later.",
+        },
+      });
+      return;
+    }
+    next();
+  };
+}
 
 /** Source tree for the distributable WordPress plugin (sibling of `src/` / `dist/`). */
 const WP_PLUGIN_SRC_DIR = path.resolve(_serverFileDir, "..", "wordpress-plugin", "apkzio-telemetry");
 const app = express();
 
+// Initialize Sentry error tracking (must be first)
+initSentry(app);
+
 if ((process.env.APKZIO_TRUST_PROXY ?? "").trim() === "1") {
   app.set("trust proxy", 1);
 }
+
+// Apply security headers
+setupSecurityHeaders(app);
 
 app.use(
   cors({
@@ -69,9 +148,16 @@ app.use(
       "Accept",
       "X-Apkzio-Admin-Key",
       "x-apkzio-admin-key",
+      "stripe-signature",
+      "X-CSRF-Token",
     ],
+    credentials: true,
   }),
 );
+
+// Stripe webhook needs raw body for signature verification
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
 // Builder requests can include a source logo data URL (a few hundred KB) and
 // occasional generated icon assets — bump the JSON limit so legitimate uploads
 // don't hit 413. Anything larger than this is genuinely abusive.
@@ -94,6 +180,9 @@ app.use((errInstance: unknown, _req: express.Request, res: express.Response, nex
   }
   next(errInstance);
 });
+
+// Metrics middleware (after JSON parsing, before request logging)
+app.use(metricsMiddleware);
 
 function log(level: "info" | "warn" | "error", event: string, payload: Record<string, unknown>) {
   console.log(
@@ -162,26 +251,37 @@ app.get("/health", (_req, res) => ok(res, { ok: true, service: "apkzio-local-api
 /** Safe capability snapshot for dashboards (no secrets). Older deployments may omit this route. */
 app.get("/api/status", (_req, res) => ok(res, buildPublicStatusPayload()));
 
-app.get("/api/apps", (_req, res) => {
-  ok(res, { ok: true, apps: store.listApps() });
+app.get("/api/apps", async (_req, res) => {
+  ok(res, { ok: true, apps: await store.listApps() });
 });
 
-app.get("/api/apps/:appId", (req, res) => {
+app.get("/api/apps/:appId", async (req, res) => {
   const appRow = store.apps.get(req.params.appId);
   if (!appRow) return err(res, "not_found", "App not found", 404);
   ok(res, { ok: true, app: appRow });
 });
 
-app.post("/api/apps", (req, res) => {
+app.post("/api/apps", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   try {
-    const created = store.createApp({
+    const created = await store.createApp({
       name: typeof b.name === "string" ? b.name : "",
       package_name: typeof b.package_name === "string" ? b.package_name : "",
       fcm_project_id: typeof b.fcm_project_id === "string" ? b.fcm_project_id : null,
       icon_glyph: typeof b.icon_glyph === "string" ? b.icon_glyph : undefined,
       icon_color: typeof b.icon_color === "string" ? b.icon_color : undefined,
     });
+    
+    // Trigger webhook
+    void import("./webhooks/trigger.js").then(m => {
+      void m.triggerWebhook("app.created", {
+        app_id: created.id,
+        name: created.name,
+        package_name: created.package_name,
+        created_at: created.created_at,
+      });
+    }).catch(() => undefined);
+    
     return ok(res, { ok: true, app: created });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "create_failed";
@@ -192,7 +292,7 @@ app.post("/api/apps", (req, res) => {
   }
 });
 
-app.patch("/api/apps/:appId", (req, res) => {
+app.patch("/api/apps/:appId", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const patch: Parameters<typeof store.updateApp>[1] = {};
   if (typeof b.name === "string") patch.name = b.name;
@@ -212,18 +312,18 @@ app.patch("/api/apps/:appId", (req, res) => {
   }
 });
 
-app.delete("/api/apps/:appId", (req, res) => {
+app.delete("/api/apps/:appId", async (req, res) => {
   const removed = store.deleteApp(req.params.appId);
   if (!removed) return err(res, "not_found", "App not found", 404);
   return ok(res, { ok: true });
 });
 
-app.get("/api/apps/:appId/devices", (req, res) => {
-  ok(res, { ok: true, devices: store.getDevicesForApp(req.params.appId) });
+app.get("/api/apps/:appId/devices", async (req, res) => {
+  ok(res, { ok: true, devices: await store.getDevicesForApp(req.params.appId) });
 });
 
-app.get("/api/apps/:appId/subscribers", (req, res) => {
-  ok(res, { ok: true, subscribers: store.getSubscribersForApp(req.params.appId) });
+app.get("/api/apps/:appId/subscribers", async (req, res) => {
+  ok(res, { ok: true, subscribers: await store.getSubscribersForApp(req.params.appId) });
 });
 
 app.patch("/api/subscribers/:id", (req, res) => {
@@ -251,7 +351,7 @@ app.get("/api/campaigns/:id", (req, res) => {
   ok(res, { ok: true, campaign: c });
 });
 
-app.post("/api/campaigns", (req, res) => {
+app.post("/api/campaigns", async (req, res) => {
   try {
     const b = req.body ?? {};
     const appId = String(b.app_id);
@@ -270,7 +370,7 @@ app.post("/api/campaigns", (req, res) => {
           })
         : [];
 
-    const camp = store.createCampaign({
+    const camp = await store.createCampaign({
       app_id: appId,
       title,
       body,
@@ -337,10 +437,27 @@ app.post("/api/campaigns/:id/duplicate", (req, res) => {
   }
 });
 
-app.post("/api/campaigns/:id/send", (req, res) => {
+app.post("/api/campaigns/:id/send", async (req, res) => {
   try {
-    const c = store.sendDraftCampaign(req.params.id);
+    const c = await store.sendDraftCampaign(req.params.id);
     ok(res, { ok: true, campaign: c });
+    
+    // Trigger webhook
+    void import("./webhooks/trigger.js").then(m => {
+      void m.triggerWebhook("campaign.sent", {
+        campaign_id: c.id,
+        app_id: c.app_id,
+        title: c.title,
+        recipients_count: store.resolveFcmTokens(c.app_id, {
+          type: c.target_type,
+          active_within_minutes: c.active_within_minutes,
+          country_codes: c.country_codes,
+          device_ids: c.device_ids,
+        }).length,
+        sent_at: new Date().toISOString(),
+      });
+    }).catch(() => undefined);
+    
     if (isFirebaseAdminConfigured()) {
       const tokens = store.resolveFcmTokens(c.app_id, {
         type: c.target_type,
@@ -368,12 +485,81 @@ app.post("/api/campaigns/:id/send", (req, res) => {
   }
 });
 
-app.get("/api/api-keys", (_req, res) => ok(res, { ok: true, api_keys: store.apiKeys }));
+// --- Analytics & Crash Tracking ---
 
-app.post("/api/api-keys", (req, res) => {
+app.get("/api/analytics/crashes", async (req, res) => {
+  const appId = typeof req.query.app_id === "string" ? req.query.app_id : "";
+  const range = req.query.range === "24h" || req.query.range === "30d" ? req.query.range : "7d";
+  
+  if (!appId) return err(res, "invalid_request", "app_id is required", 400);
+  
+  try {
+    const analytics = await queryCrashAnalytics(appId, range);
+    return ok(res, { ok: true, data: analytics });
+  } catch (e) {
+    console.error("Crash analytics error:", e);
+    const msg = e instanceof Error ? e.message : "error";
+    return err(res, "query_failed", msg, 500);
+  }
+});
+
+app.post("/api/events/crash", (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   try {
-    const result = store.createApiKey({
+    const result = store.recordCrash({
+      app_id: typeof b.app_id === "string" ? b.app_id : "",
+      device_id: typeof b.device_id === "string" ? b.device_id : undefined,
+      crash_type: typeof b.crash_type === "string" ? b.crash_type : "",
+      stack_trace: typeof b.stack_trace === "string" ? b.stack_trace : undefined,
+      app_version: typeof b.app_version === "string" ? b.app_version : undefined,
+      os_version: typeof b.os_version === "string" ? b.os_version : undefined,
+      manufacturer: typeof b.manufacturer === "string" ? b.manufacturer : undefined,
+      model: typeof b.model === "string" ? b.model : undefined,
+      metadata: typeof b.metadata === "object" && b.metadata !== null ? b.metadata as Record<string, unknown> : undefined,
+    });
+    return ok(res, { ok: true, crash_id: result.crash_id }, 201);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "error";
+    if (msg === "app_not_found") return err(res, "not_found", "App not found", 404);
+    return err(res, "invalid_request", msg, 400);
+  }
+});
+
+app.get("/api/campaigns/:id/errors", async (req, res) => {
+  try {
+    const errors = await queryCampaignErrors(req.params.id);
+    return ok(res, { ok: true, errors });
+  } catch (e) {
+    console.error("Campaign errors query failed:", e);
+    const msg = e instanceof Error ? e.message : "error";
+    return err(res, "query_failed", msg, 500);
+  }
+});
+
+app.post("/api/campaigns/:id/errors", (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  try {
+    const result = store.recordCampaignError({
+      campaign_id: req.params.id,
+      error_code: typeof b.error_code === "string" ? b.error_code : "",
+      error_message: typeof b.error_message === "string" ? b.error_message : undefined,
+      subscriber_id: typeof b.subscriber_id === "string" ? b.subscriber_id : undefined,
+      device_info: typeof b.device_info === "object" && b.device_info !== null ? b.device_info as Record<string, unknown> : undefined,
+    });
+    return ok(res, { ok: true, error_id: result.error_id }, 201);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "error";
+    if (msg === "campaign_not_found") return err(res, "not_found", "Campaign not found", 404);
+    return err(res, "invalid_request", msg, 400);
+  }
+});
+
+app.get("/api/api-keys", (_req, res) => ok(res, { ok: true, api_keys: store.apiKeys }));
+
+app.post("/api/api-keys", async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  try {
+    const result = await store.createApiKey({
       app_id: typeof b.app_id === "string" ? b.app_id : "",
       name: typeof b.name === "string" ? b.name : "",
       scopes: Array.isArray(b.scopes) ? (b.scopes as unknown[]).map((s) => String(s)) : [],
@@ -424,11 +610,11 @@ app.get("/api/builds", (_req, res) => ok(res, { ok: true, builds: store.builds }
 
 // Body shape matches `CreateBuildInput` in `apkzio-admin/src/lib/api.ts` (flat WebView
 // keys parsed into `config` below).
-app.post("/api/builds", (req, res) => {
+app.post("/api/builds", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   try {
     const config = parseWebViewConfig(b);
-    const build = store.createBuild({
+    const build = await store.createBuild({
       app_id: typeof b.app_id === "string" ? b.app_id : "",
       version_code: typeof b.version_code === "number" ? b.version_code : Number(b.version_code),
       version_name: typeof b.version_name === "string" ? b.version_name : "",
@@ -552,9 +738,179 @@ app.get("/artifacts/:buildId/:filename", async (req, res) => {
   return undefined;
 });
 
-app.get("/api/analytics/overview", (req, res) => {
+app.get("/api/analytics/overview", async (req, res) => {
   const seed = typeof req.query.seed === "string" ? req.query.seed : "global";
-  ok(res, { ok: true, ...store.analyticsOverview(seed) });
+  
+  // Parse seed to extract appId (format: "ana-{appId}-{range}")
+  const parts = seed.split("-");
+  const appId = parts.length >= 2 && parts[1] !== "all" ? parts[1] : undefined;
+  const rangePart = parts.length >= 3 ? parts[2] : "30d";
+  const days = rangePart === "90d" ? 90 : rangePart === "7d" ? 7 : 30;
+  
+  try {
+    const data = await getGlobalAnalyticsOverview(appId, days);
+    ok(res, { ok: true, ...data });
+  } catch (e) {
+    console.error("Analytics overview error:", e);
+    return err(res, "query_failed", "Failed to fetch analytics", 500);
+  }
+});
+
+app.get("/api/apps/:appId/analytics/installs", (req, res) => {
+  const { appId } = req.params;
+  const days = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 14;
+  
+  if (isNaN(days) || days < 1 || days > 365) {
+    return err(res, "invalid_request", "days must be between 1 and 365", 400);
+  }
+  
+  const trends = store.getAppInstallTrends(appId, days);
+  ok(res, { ok: true, trends });
+});
+
+app.get("/api/apps/:appId/analytics/heartbeats", async (req, res) => {
+  const { appId } = req.params;
+  const hours = typeof req.query.hours === "string" ? parseInt(req.query.hours, 10) : 48;
+  
+  if (isNaN(hours) || hours < 1 || hours > 168) {
+    return err(res, "invalid_request", "hours must be between 1 and 168", 400);
+  }
+  
+  try {
+    const trends = await getHourlyHeartbeats(appId, hours);
+    ok(res, { ok: true, trends });
+  } catch (e) {
+    console.error("Heartbeat trends error:", e);
+    return err(res, "query_failed", "Failed to fetch trends", 500);
+  }
+});
+
+app.get("/api/analytics/events/:eventName/trends", async (req, res) => {
+  const { eventName } = req.params;
+  const days = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+  
+  if (isNaN(days) || days < 1 || days > 365) {
+    return err(res, "invalid_request", "days must be between 1 and 365", 400);
+  }
+  
+  try {
+    // Note: getEventTrend expects hours, so convert days to hours
+    const hours = days * 24;
+    const trendData = await getEventTrend('all', eventName, hours);
+    // Convert to array of numbers for frontend compatibility
+    const trends = trendData.map(t => t.count);
+    ok(res, { ok: true, trends });
+  } catch (e) {
+    console.error("Event trends error:", e);
+    return err(res, "query_failed", "Failed to fetch trends", 500);
+  }
+});
+
+// --- Optimized Analytics Endpoints (using aggregations) ---
+
+/**
+ * Get comprehensive analytics overview for an app
+ * Uses pre-aggregated hourly/daily rollups for fast queries
+ */
+app.get("/api/apps/:appId/analytics/overview", async (req, res) => {
+  const { appId } = req.params;
+  const range = typeof req.query.range === "string" ? req.query.range : "30d";
+  
+  if (!appId) {
+    return err(res, "invalid_request", "appId is required", 400);
+  }
+  
+  try {
+    const [dailyInstalls, hourlyHeartbeats, geoBreakdown, summary, pushStats, recentEvents] = await Promise.all([
+      getDailyInstalls(appId, 30),
+      getHourlyHeartbeats(appId, 48),
+      getGeoBreakdown(appId, range),
+      getAppSummary(appId, 30),
+      getPushStats(appId, 30),
+      getRecentEvents(appId, 20),
+    ]);
+    
+    ok(res, {
+      ok: true,
+      dailyInstalls,
+      hourlyHeartbeats,
+      geoBreakdown,
+      summary,
+      pushStats,
+      recentEvents,
+    });
+  } catch (error) {
+    console.error("Analytics overview error:", error);
+    return err(res, "query_failed", "Failed to fetch analytics", 500);
+  }
+});
+
+/**
+ * Get geographic breakdown for an app
+ */
+app.get("/api/apps/:appId/analytics/geo", async (req, res) => {
+  const { appId } = req.params;
+  const range = typeof req.query.range === "string" ? req.query.range : "7d";
+  
+  if (!appId) {
+    return err(res, "invalid_request", "appId is required", 400);
+  }
+  
+  try {
+    const geoBreakdown = await getGeoBreakdown(appId, range);
+    ok(res, { ok: true, geoBreakdown });
+  } catch (error) {
+    console.error("Geo breakdown error:", error);
+    return err(res, "query_failed", "Failed to fetch geo breakdown", 500);
+  }
+});
+
+/**
+ * Get app summary statistics
+ */
+app.get("/api/apps/:appId/analytics/summary", async (req, res) => {
+  const { appId } = req.params;
+  const days = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+  
+  if (!appId) {
+    return err(res, "invalid_request", "appId is required", 400);
+  }
+  
+  if (isNaN(days) || days < 1 || days > 365) {
+    return err(res, "invalid_request", "days must be between 1 and 365", 400);
+  }
+  
+  try {
+    const summary = await getAppSummary(appId, days);
+    ok(res, { ok: true, summary });
+  } catch (error) {
+    console.error("Summary error:", error);
+    return err(res, "query_failed", "Failed to fetch summary", 500);
+  }
+});
+
+/**
+ * Get push notification statistics
+ */
+app.get("/api/apps/:appId/analytics/push", async (req, res) => {
+  const { appId } = req.params;
+  const days = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+  
+  if (!appId) {
+    return err(res, "invalid_request", "appId is required", 400);
+  }
+  
+  if (isNaN(days) || days < 1 || days > 365) {
+    return err(res, "invalid_request", "days must be between 1 and 365", 400);
+  }
+  
+  try {
+    const pushStats = await getPushStats(appId, days);
+    ok(res, { ok: true, pushStats });
+  } catch (error) {
+    console.error("Push stats error:", error);
+    return err(res, "query_failed", "Failed to fetch push stats", 500);
+  }
 });
 
 // --- WordPress plugin telemetry (public ingest) + admin Plugins APIs ---
@@ -859,7 +1215,148 @@ app.get("/api/admin/clients/:userId", (req, res) => {
   return ok(res, { ok: true, client: detail });
 });
 
+app.post("/api/admin/clients", (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  try {
+    const client = store.createAdminClient({
+      email: typeof b.email === "string" ? b.email : "",
+      full_name: typeof b.full_name === "string" ? b.full_name : "",
+      plan:
+        b.plan === "starter" || b.plan === "pro" || b.plan === "business" || b.plan === "enterprise"
+          ? b.plan
+          : undefined,
+      phone: typeof b.phone === "string" ? b.phone : undefined,
+      location: typeof b.location === "string" ? b.location : undefined,
+      website: typeof b.website === "string" ? b.website : undefined,
+      bio: typeof b.bio === "string" ? b.bio : undefined,
+    });
+    return ok(res, { ok: true, client }, 201);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "create_failed";
+    if (msg === "invalid_email") return err(res, "invalid_email", "Email is invalid", 400);
+    if (msg === "invalid_full_name") return err(res, "invalid_request", "Full name is required", 400);
+    if (msg === "email_in_use") return err(res, "conflict", "Email already in use", 409);
+    if (msg === "invalid_plan") return err(res, "invalid_request", "Invalid plan", 400);
+    return err(res, "invalid_request", msg, 400);
+  }
+});
+
+app.patch("/api/admin/clients/:userId", (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const patch: Parameters<typeof store.updateAdminClient>[1] = {};
+  if (typeof b.full_name === "string") patch.full_name = b.full_name;
+  if (
+    b.plan === "starter" ||
+    b.plan === "pro" ||
+    b.plan === "business" ||
+    b.plan === "enterprise"
+  ) {
+    patch.plan = b.plan;
+  }
+  if (typeof b.email_verified === "boolean") patch.email_verified = b.email_verified;
+  if (typeof b.phone === "string") patch.phone = b.phone;
+  if (typeof b.location === "string") patch.location = b.location;
+  if (typeof b.website === "string") patch.website = b.website;
+  if (typeof b.bio === "string") patch.bio = b.bio;
+
+  try {
+    const client = store.updateAdminClient(req.params.userId, patch);
+    return ok(res, { ok: true, client });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "update_failed";
+    if (msg === "not_found") return err(res, "not_found", "Client not found", 404);
+    return err(res, "invalid_request", msg, 400);
+  }
+});
+
+app.delete("/api/admin/clients/:userId", (req, res) => {
+  const removed = store.deleteAdminClient(req.params.userId);
+  if (!removed) return err(res, "not_found", "Client not found", 404);
+  return ok(res, { ok: true });
+});
+
+app.post("/api/admin/clients/:userId/impersonate", (req, res) => {
+  const user = store.findUserById(req.params.userId);
+  if (!user) return err(res, "not_found", "Client not found", 404);
+  
+  // Generate an impersonation token (same as regular auth but logged)
+  log("info", "admin_impersonate", {
+    admin_user: optionalUser(req)?.email ?? "admin-key",
+    target_user: user.email,
+    target_user_id: user.id,
+  });
+  
+  return ok(res, authResponse(user));
+});
+
+// --- Billing ---
+
+app.get('/api/billing/plans', (req, res) => {
+  res.json({ plans: BILLING_PLANS });
+});
+
+app.post('/api/billing/checkout', async (req, res) => {
+  try {
+    const { client_id, plan_id, interval } = req.body;
+    if (!client_id || !plan_id || !interval) {
+      return err(res, 'invalid_request', 'client_id, plan_id, and interval are required', 400);
+    }
+    if (interval !== 'monthly' && interval !== 'yearly') {
+      return err(res, 'invalid_request', 'interval must be "monthly" or "yearly"', 400);
+    }
+    const url = await createCheckoutSession(client_id, plan_id, interval);
+    res.json({ url });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Checkout failed';
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/billing/cancel', async (req, res) => {
+  try {
+    const { subscription_id } = req.body;
+    if (!subscription_id) {
+      return err(res, 'invalid_request', 'subscription_id is required', 400);
+    }
+    await cancelSubscription(subscription_id);
+    res.json({ success: true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Cancellation failed';
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/billing/subscription/:clientId', async (req, res) => {
+  try {
+    const sub = await getSubscriptionDetails(req.params.clientId);
+    res.json(sub);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to fetch subscription';
+    res.status(500).json({ error: msg });
+  }
+});
+
 // --- Auth ---
+
+// Apply auth rate limiting to authentication routes
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
+app.use("/api/auth/forgot-password", authLimiter);
+app.use("/api/auth/reset-password", authLimiter);
+
+// Apply API rate limiting to general API routes (excluding events)
+app.use("/api/apps", apiLimiter);
+app.use("/api/campaigns", apiLimiter);
+app.use("/api/api-keys", apiLimiter);
+app.use("/api/builds", apiLimiter);
+app.use("/api/admin", apiLimiter);
+
+// Public SDK API routes (for Android app developers)
+app.use("/api/v1", publicSdkRoutes);
+
+// Apply event rate limiting
+app.use("/api/events", eventLimiter);
+app.use("/sdk/event", eventLimiter);
 
 app.post("/api/auth/register", (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
@@ -1347,7 +1844,7 @@ function normalizeWebsiteUrlForBuild(raw: string): { url: string | null; reason?
   return { url: parsed.toString() };
 }
 
-app.post("/api/builder/builds", builderRateLimit, (req, res) => {
+app.post("/api/builder/builds", builderRateLimit, async (req, res) => {
   const user = optionalUser(req);
   const b = (req.body ?? {}) as BuilderPayload;
 
@@ -1387,21 +1884,22 @@ app.post("/api/builder/builds", builderRateLimit, (req, res) => {
 
   let appId: string;
   if (user) {
-    appId = store.getOrCreatePublicBuilderApp(user.id).id;
+    const app = await store.getOrCreatePublicBuilderApp(user.id);
+    appId = app.id;
   } else {
     const placeholder = [...store.apps.values()].find((a) => a.name === "Public builder (anonymous)");
     appId = placeholder
       ? placeholder.id
-      : store.createApp({
+      : (await store.createApp({
           name: "Public builder (anonymous)",
           package_name: "com.apkzio.publicbuilder",
           icon_glyph: "PB",
           icon_color: "from-zinc-500/20 to-zinc-500/5",
-        }).id;
+        })).id;
   }
 
   try {
-    const build = store.createBuild({
+    const build = await store.createBuild({
       app_id: appId,
       version_code: versionCode,
       version_name: versionName,
@@ -1500,15 +1998,177 @@ app.post("/sdk/heartbeat", (req, res) => {
   ok(res, { ok: true });
 });
 
-app.post("/sdk/event", (_req, res) => {
-  ok(res, { ok: true, accepted: 1, rejected: 0 });
+// Event ingestion endpoint (single event)
+app.post("/sdk/event", eventRateLimitMiddleware(), (req, res) => {
+  try {
+    const event = req.body as AnalyticsEvent;
+    
+    // Validate the event
+    const validation = validateEvent(event);
+    if (!validation.valid) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: "validation_failed",
+          message: validation.error,
+        },
+      });
+    }
+    
+    // Add to buffer
+    eventBuffer.add(event);
+    
+    return res.json({ ok: true, accepted: 1, rejected: 0 });
+  } catch (err) {
+    console.error("[Event Ingestion] Error processing event:", err);
+    return res.status(500).json({
+      ok: false,
+      error: {
+        code: "internal_error",
+        message: "Failed to process event",
+      },
+    });
+  }
+});
+
+// Batch event ingestion endpoint
+app.post("/api/events", eventRateLimitMiddleware(), (req, res) => {
+  try {
+    const batch = req.body as EventBatch;
+    
+    if (!batch || !Array.isArray(batch.events)) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "Request body must contain an 'events' array",
+        },
+      });
+    }
+    
+    // Validate all events
+    const errors: string[] = [];
+    const validEvents: AnalyticsEvent[] = [];
+    
+    for (let i = 0; i < batch.events.length; i++) {
+      const event = batch.events[i];
+      const validation = validateEvent(event);
+      
+      if (validation.valid) {
+        validEvents.push(event as AnalyticsEvent);
+      } else {
+        errors.push(`Event ${i}: ${validation.error}`);
+      }
+    }
+    
+    // If there are validation errors, return them
+    if (errors.length > 0 && validEvents.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: "validation_failed",
+          message: "All events failed validation",
+        },
+        errors,
+      });
+    }
+    
+    // Deduplicate valid events
+    const unique = deduplicateEvents(validEvents);
+    
+    // Add to buffer
+    eventBuffer.addBatch(unique);
+    
+    return res.json({
+      ok: true,
+      accepted: unique.length,
+      duplicates: validEvents.length - unique.length,
+      rejected: errors.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (err) {
+    console.error("[Event Ingestion] Error processing batch:", err);
+    return res.status(500).json({
+      ok: false,
+      error: {
+        code: "internal_error",
+        message: "Failed to process event batch",
+      },
+    });
+  }
+});
+
+// Optimized bulk batch endpoint (for very large batches)
+app.post("/api/events/batch", eventRateLimitMiddleware(), (req, res) => {
+  try {
+    const batch = req.body as EventBatch;
+    
+    if (!batch || !Array.isArray(batch.events)) {
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "Request body must contain an 'events' array",
+        },
+      });
+    }
+    
+    // For large batches, we validate and process in chunks
+    const chunkSize = 500;
+    let totalAccepted = 0;
+    let totalDuplicates = 0;
+    let totalRejected = 0;
+    const allErrors: string[] = [];
+    
+    for (let offset = 0; offset < batch.events.length; offset += chunkSize) {
+      const chunk = batch.events.slice(offset, offset + chunkSize);
+      const validEvents: AnalyticsEvent[] = [];
+      
+      for (let i = 0; i < chunk.length; i++) {
+        const event = chunk[i];
+        const validation = validateEvent(event);
+        
+        if (validation.valid) {
+          validEvents.push(event as AnalyticsEvent);
+        } else {
+          totalRejected++;
+          if (allErrors.length < 100) {
+            allErrors.push(`Event ${offset + i}: ${validation.error}`);
+          }
+        }
+      }
+      
+      const unique = deduplicateEvents(validEvents);
+      totalAccepted += unique.length;
+      totalDuplicates += validEvents.length - unique.length;
+      
+      eventBuffer.addBatch(unique);
+    }
+    
+    return res.json({
+      ok: true,
+      accepted: totalAccepted,
+      duplicates: totalDuplicates,
+      rejected: totalRejected,
+      errors: allErrors.length > 0 ? allErrors : undefined,
+    });
+  } catch (err) {
+    console.error("[Event Ingestion] Error processing bulk batch:", err);
+    return res.status(500).json({
+      ok: false,
+      error: {
+        code: "internal_error",
+        message: "Failed to process bulk batch",
+      },
+    });
+  }
 });
 
 app.post("/push/track", (_req, res) => {
   ok(res, { ok: true });
 });
 
-app.post("/push/send", (req, res) => {
+app.post("/push/send", async (req, res) => {
   const auth = req.headers.authorization ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/);
   if (!m) return err(res, "missing_api_key", "Authorization: Bearer sk_… required", 401);
@@ -1533,7 +2193,7 @@ app.post("/push/send", (req, res) => {
             device_ids: b.target?.device_ids ?? b.target_device_ids,
           })
         : [];
-    const camp = store.createCampaign({
+    const camp = await store.createCampaign({
       app_id: appId,
       title,
       body,
@@ -1561,13 +2221,250 @@ app.post("/push/send", (req, res) => {
   }
 });
 
+// --- Team Management API ---
+import { 
+  inviteTeamMember, 
+  acceptInvite, 
+  removeTeamMember, 
+  updateMemberRole,
+  listTeamMembers 
+} from './team/api.js';
+import { loadUserRole, requirePermission } from './team/middleware.js';
+import { isValidRole } from './team/roles.js';
+
+// Public accept invite endpoint (no auth required)
+app.post("/api/team/accept", async (req, res) => {
+  try {
+    const { token, email } = req.body;
+    
+    if (!token || !email) {
+      return err(res, "invalid_request", "Missing token or email", 400);
+    }
+    
+    const member = await acceptInvite(token, email);
+    return ok(res, { ok: true, member });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "accept_failed";
+    if (msg === "Invalid or expired invite token") {
+      return err(res, "invalid_invite", msg, 400);
+    }
+    return err(res, "internal_error", "Failed to accept invite", 500);
+  }
+});
+
+// Team management routes (require authentication)
+app.use("/api/team", loadUserRole);
+
+app.get("/api/team/members", requirePermission('team', 'invite'), async (req, res) => {
+  try {
+    const members = await listTeamMembers();
+    return ok(res, { ok: true, members });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "list_failed";
+    return err(res, "internal_error", msg, 500);
+  }
+});
+
+app.post("/api/team/invite", requirePermission('team', 'invite'), async (req, res) => {
+  try {
+    const { email, role } = req.body;
+    
+    if (!email || !role) {
+      return err(res, "invalid_request", "Missing email or role", 400);
+    }
+    
+    if (!isValidRole(role)) {
+      return err(res, "invalid_request", "Invalid role", 400);
+    }
+    
+    const result = await inviteTeamMember(req.user!.email, email, role);
+    return ok(res, { ok: true, ...result }, 201);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "invite_failed";
+    if (msg === "User is already a team member") {
+      return err(res, "conflict", msg, 409);
+    }
+    if (msg === "Inviter not found") {
+      return err(res, "invalid_request", msg, 400);
+    }
+    return err(res, "internal_error", msg, 500);
+  }
+});
+
+app.delete("/api/team/members/:id", requirePermission('team', 'remove'), async (req, res) => {
+  try {
+    await removeTeamMember(req.params.id);
+    return ok(res, { ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "remove_failed";
+    if (msg === "Member not found or already removed") {
+      return err(res, "not_found", msg, 404);
+    }
+    return err(res, "internal_error", msg, 500);
+  }
+});
+
+app.patch("/api/team/members/:id/role", requirePermission('team', 'manage'), async (req, res) => {
+  try {
+    const { role } = req.body;
+    
+    if (!role) {
+      return err(res, "invalid_request", "Missing role", 400);
+    }
+    
+    if (!isValidRole(role)) {
+      return err(res, "invalid_request", "Invalid role", 400);
+    }
+    
+    await updateMemberRole(req.params.id, role);
+    return ok(res, { ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "update_failed";
+    if (msg === "Member not found or not active") {
+      return err(res, "not_found", msg, 404);
+    }
+    return err(res, "internal_error", msg, 500);
+  }
+});
+
+// --- Webhooks API ---
+
+app.get("/api/webhooks", async (req, res) => {
+  try {
+    const { rows } = await import("./db.js").then(m => m.query('SELECT * FROM webhook_endpoints ORDER BY created_at DESC'));
+    res.json({ ok: true, webhooks: rows });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    res.status(500).json({ ok: false, error: { code: "query_failed", message: msg } });
+  }
+});
+
+app.post("/api/webhooks", async (req, res) => {
+  try {
+    const { url, events } = req.body ?? {};
+    if (!url || typeof url !== "string" || !url.startsWith("http")) {
+      return err(res, "invalid_request", "url must be a valid HTTP(S) URL", 400);
+    }
+    if (!Array.isArray(events) || events.length === 0) {
+      return err(res, "invalid_request", "events array is required", 400);
+    }
+    
+    const secret = randomBytes(32).toString("hex");
+    const db = await import("./db.js");
+    
+    const { rows } = await db.query(`
+      INSERT INTO webhook_endpoints (url, secret, events)
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `, [url, secret, events]);
+    
+    res.json({ ok: true, webhook: rows[0] });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    res.status(500).json({ ok: false, error: { code: "create_failed", message: msg } });
+  }
+});
+
+app.patch("/api/webhooks/:id", async (req, res) => {
+  try {
+    const { is_active } = req.body ?? {};
+    if (typeof is_active !== "boolean") {
+      return err(res, "invalid_request", "is_active boolean is required", 400);
+    }
+    
+    const db = await import("./db.js");
+    const { rows } = await db.query(`
+      UPDATE webhook_endpoints 
+      SET is_active = $1
+      WHERE id = $2
+      RETURNING *
+    `, [is_active, req.params.id]);
+    
+    if (rows.length === 0) {
+      return err(res, "not_found", "Webhook not found", 404);
+    }
+    
+    res.json({ ok: true, webhook: rows[0] });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    res.status(500).json({ ok: false, error: { code: "update_failed", message: msg } });
+  }
+});
+
+app.delete("/api/webhooks/:id", async (req, res) => {
+  try {
+    const db = await import("./db.js");
+    const { rowCount } = await db.query('DELETE FROM webhook_endpoints WHERE id = $1', [req.params.id]);
+    
+    if (rowCount === 0) {
+      return err(res, "not_found", "Webhook not found", 404);
+    }
+    
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    res.status(500).json({ ok: false, error: { code: "delete_failed", message: msg } });
+  }
+});
+
+app.get("/api/webhooks/:id/deliveries", async (req, res) => {
+  try {
+    const db = await import("./db.js");
+    const { rows } = await db.query(`
+      SELECT * FROM webhook_deliveries
+      WHERE endpoint_id = $1
+      ORDER BY created_at DESC
+      LIMIT 100
+    `, [req.params.id]);
+    
+    res.json({ ok: true, deliveries: rows });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    res.status(500).json({ ok: false, error: { code: "query_failed", message: msg } });
+  }
+});
+
+// Sentry error handler (must be last, after all routes)
+app.use(sentryErrorHandler());
+
+// Start webhook worker
+void import("./webhooks/delivery-worker.js").then(m => {
+  m.webhookWorker.start();
+}).catch(err => {
+  log("error", "webhook_worker_start_failed", { message: err instanceof Error ? err.message : String(err) });
+});
+
 const server = app.listen(PORT, () => {
   log("info", "server_listening", { port: PORT, enforce_admin_auth: ENFORCE_ADMIN_AUTH });
   log("info", "service_key_loaded", { key_preview: `${DEMO_SERVICE_KEY.slice(0, 12)}...` });
+  
+  // Start analytics aggregator
+  // Only start aggregator if using database mode
+  if (USE_DATABASE) {
+    aggregator.start();
+  } else {
+    console.log('📊 Analytics Aggregator skipped (in-memory mode)');
+  }
 });
 
 async function shutdown(signal: string) {
   log("info", "shutdown_start", { signal });
+  
+  // Stop aggregator first
+  aggregator.stop();
+  
+  // Flush event buffer before closing
+  log("info", "flushing_event_buffer", { buffer_size: eventBuffer.getBufferSize() });
+  await eventBuffer.stop();
+  
+  // Stop webhook worker
+  try {
+    const { webhookWorker } = await import("./webhooks/delivery-worker.js");
+    webhookWorker.stop();
+  } catch (err) {
+    log("error", "webhook_worker_stop_failed", { message: err instanceof Error ? err.message : String(err) });
+  }
+  
   await new Promise<void>((resolve) => server.close(() => resolve()));
   log("info", "shutdown_complete", { signal });
   process.exit(0);

@@ -74,13 +74,7 @@ export function Sidebar({ onSignOut, onClose }: { onSignOut: () => void; onClose
       {/* Brand */}
       <div className="flex items-center justify-between px-5 pt-5 pb-3">
         <div className="flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-md bg-signal text-ink-0">
-            <Icon.Logo size={18} />
-          </div>
-          <div className="leading-tight">
-            <div className="font-display text-[17px] font-semibold tracking-tight">ApkZio</div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-bone-low">v1.4 · stable</div>
-          </div>
+          <img src="/logo-dark.png" alt="ApkZio" className="h-10 w-auto" />
         </div>
         {onClose && (
           <button

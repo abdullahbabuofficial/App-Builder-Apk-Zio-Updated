@@ -269,33 +269,7 @@ export function Dashboard() {
                 </thead>
                 <tbody>
                   {apps.slice(0, 6).map((a) => (
-                    <tr key={a.id} className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
-                      <td className="px-5 py-3">
-                        <Link to={`/apps/${a.id}`} className="flex items-center gap-3">
-                          <div className={`grid h-8 w-8 place-items-center rounded-md bg-gradient-to-br font-mono text-[11px] font-medium text-bone ${a.icon_color}`}>
-                            {a.icon_glyph}
-                          </div>
-                          <div>
-                            <div className="font-medium text-bone">{a.name}</div>
-                            <div className="font-mono text-[10px] text-bone-low">{a.package_name}</div>
-                          </div>
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono num text-bone">{compact(a.live_users)}</td>
-                      <td className="hidden px-4 py-3 text-right font-mono num text-bone sm:table-cell">{compact(a.active_devices_24h)}</td>
-                      <td className="hidden px-4 py-3 text-right font-mono num text-bone-mid md:table-cell">{compact(a.total_installs)}</td>
-                      <td className="hidden px-4 py-3 text-right lg:table-cell"><span className="font-mono num text-ok">{pct(a.delivery_rate * 100)}</span></td>
-                      <td className="px-5 py-3">
-                        <div className="ml-auto w-fit">
-                          <Sparkline
-                            data={[]}
-                            color={a.status === "paused" ? "#FFB547" : "#CDFF3F"}
-                            width={88}
-                            height={28}
-                          />
-                        </div>
-                      </td>
-                    </tr>
+                    <AppTableRow key={a.id} app={a} />
                   ))}
                 </tbody>
               </table>
@@ -366,6 +340,40 @@ export function Dashboard() {
         </Card>
       </div>
     </>
+  );
+}
+
+function AppTableRow({ app }: { app: AndroidApp }) {
+  const trends = useAppTrends(app.id, 14);
+  
+  return (
+    <tr className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
+      <td className="px-5 py-3">
+        <Link to={`/apps/${app.id}`} className="flex items-center gap-3">
+          <div className={`grid h-8 w-8 place-items-center rounded-md bg-gradient-to-br font-mono text-[11px] font-medium text-bone ${app.icon_color}`}>
+            {app.icon_glyph}
+          </div>
+          <div>
+            <div className="font-medium text-bone">{app.name}</div>
+            <div className="font-mono text-[10px] text-bone-low">{app.package_name}</div>
+          </div>
+        </Link>
+      </td>
+      <td className="px-4 py-3 text-right font-mono num text-bone">{compact(app.live_users)}</td>
+      <td className="hidden px-4 py-3 text-right font-mono num text-bone sm:table-cell">{compact(app.active_devices_24h)}</td>
+      <td className="hidden px-4 py-3 text-right font-mono num text-bone-mid md:table-cell">{compact(app.total_installs)}</td>
+      <td className="hidden px-4 py-3 text-right lg:table-cell"><span className="font-mono num text-ok">{pct(app.delivery_rate * 100)}</span></td>
+      <td className="px-5 py-3">
+        <div className="ml-auto w-fit">
+          <Sparkline
+            data={trends}
+            color={app.status === "paused" ? "#FFB547" : "#CDFF3F"}
+            width={88}
+            height={28}
+          />
+        </div>
+      </td>
+    </tr>
   );
 }
 

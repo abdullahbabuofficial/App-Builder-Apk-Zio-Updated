@@ -376,6 +376,24 @@ export class BuildRunner {
     if (this.notified.has(buildId)) return;
     const build = this.store.getBuildById(buildId);
     if (!build || !build.user_id) return;
+    
+    // Trigger webhook
+    void import("../webhooks/trigger.js").then(m => {
+      void m.triggerWebhook(
+        status === "success" ? "build.completed" : "build.failed",
+        {
+          build_id: build.id,
+          app_id: build.app_id,
+          version_code: build.version_code,
+          version_name: build.version_name,
+          status: build.status,
+          duration_ms: build.duration_ms,
+          completed_at: build.build_completed_at,
+          source_zip_url: build.source_zip_url,
+          apk_url: build.apk_url,
+        }
+      );
+    }).catch(() => undefined);
     const user = this.store.findUserById(build.user_id);
     if (!user) return;
     const config = (build.config ?? {}) as Record<string, unknown>;

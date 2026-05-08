@@ -11,6 +11,7 @@ import { Icon } from "@/lib/icons";
 import { useAuth } from "@/context/AuthContext";
 import { useApkzio } from "@/context/ApkzioDataContext";
 import { APKZIO_ADMIN_API_KEY, APKZIO_API_URL, apkzioApiHostname } from "@/lib/config";
+import { apiFetch } from "@/lib/api";
 import { isSupabaseConfigured, supabaseBrowser } from "@/lib/supabase/client";
 
 // Tooltip copy used on every disabled action so hover always explains the gating reason.
@@ -69,6 +70,94 @@ export function Settings() {
   const [profileSaved, setProfileSaved] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
+  // Billing state
+  const [subscription, setSubscription] = useState<any>(null);
+  const [billingPlans, setBillingPlans] = useState<any[]>([]);
+  const [loadingBilling, setLoadingBilling] = useState(false);
+  const [billingInterval, setBillingInterval] = useState<'monthly' | 'yearly'>('monthly');
+
+  useEffect(() => {
+    setName(initialName);
+    setEmail(initialEmail);
+  }, [initialName, initialEmail]);
+
+  // Load billing data
+  useEffect(() => {
+    async function loadBillingData() {
+      if (!session?.user?.id) return;
+      setLoadingBilling(true);
+      try {
+        // Fetch plans
+        const plansRes = await fetch(`${APKZIO_API_URL}/api/billing/plans`);
+        const plansData = await plansRes.json();
+        if (plansData.plans) {
+          setBillingPlans(plansData.plans);
+        }
+
+        // Fetch current subscription
+        const subRes = await fetch(`${APKZIO_API_URL}/api/billing/subscription/${session.user.id}`);
+        if (subRes.ok) {
+          const subData = await subRes.json();
+          setSubscription(subData);
+        }
+      } catch (error) {
+        console.error('Failed to load billing data:', error);
+      } finally {
+        setLoadingBilling(false);
+      }
+    }
+    void loadBillingData();
+  }, [session?.user?.id]);
+
+  // Handle upgrade
+  async function handleUpgrade(planId: string) {
+    if (!session?.user?.id) return;
+    try {
+      const res = await fetch(`${APKZIO_API_URL}/api/billing/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: session.user.id,
+          plan_id: planId,
+          interval: billingInterval,
+        }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      console.error('Checkout failed:', error);
+    }
+  }
+
+  // Handle cancel subscription
+  async function handleCancelSubscription() {
+    if (!subscription?.stripe_subscription_id) return;
+    if (!confirm('Are you sure you want to cancel your subscription? It will remain active until the end of the billing period.')) {
+      return;
+    }
+    try {
+      const res = await fetch(`${APKZIO_API_URL}/api/billing/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription_id: subscription.stripe_subscription_id,
+        }),
+      });
+      if (res.ok) {
+        // Reload subscription data
+        const subRes = await fetch(`${APKZIO_API_URL}/api/billing/subscription/${session?.user?.id}`);
+        if (subRes.ok) {
+          const subData = await subRes.json();
+          setSubscription(subData);
+        }
+      }
+    } catch (error) {
+      console.error('Cancel failed:', error);
+    }
+  }
+
   useEffect(() => {
     setName(initialName);
     setEmail(initialEmail);
@@ -99,6 +188,117 @@ export function Settings() {
   useEffect(() => {
     writePrefs(prefs);
   }, [prefs]);
+
+  // Team management state
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<string>("member");
+  const [inviting, setInviting] = useState(false);
+  const [loadingTeam, setLoadingTeam] = useState(false);
+
+  // Load team members
+  useEffect(() => {
+    if (tab === "team") {
+      void loadTeamMembers();
+    }
+  }, [tab]);
+
+  async function loadTeamMembers() {
+    setLoadingTeam(true);
+    try {
+      const res = await apiFetch('/api/team/members', {
+        headers: {
+          'x-user-email': session?.user?.email || '',
+        },
+      });
+      const data = await res.json();
+      if (data.members) {
+        setTeamMembers(data.members);
+      }
+    } catch (error) {
+      console.error('Failed to load team members:', error);
+    } finally {
+      setLoadingTeam(false);
+    }
+  }
+
+  async function inviteMember() {
+    if (!inviteEmail || !inviteRole) return;
+    
+    setInviting(true);
+    try {
+      const res = await apiFetch('/api/team/invite', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': session?.user?.email || '',
+        },
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      });
+      
+      if (res.ok) {
+        setShowInviteModal(false);
+        setInviteEmail("");
+        setInviteRole("member");
+        await loadTeamMembers();
+      } else {
+        const data = await res.json();
+        alert(data.error?.message || 'Failed to send invite');
+      }
+    } catch (error) {
+      console.error('Failed to invite member:', error);
+      alert('Failed to send invite');
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  async function removeMember(memberId: string) {
+    if (!confirm('Are you sure you want to remove this team member?')) return;
+    
+    try {
+      const res = await apiFetch(`/api/team/members/${memberId}`, {
+        method: 'DELETE',
+        headers: {
+          'x-user-email': session?.user?.email || '',
+        },
+      });
+      
+      if (res.ok) {
+        await loadTeamMembers();
+      } else {
+        const data = await res.json();
+        alert(data.error?.message || 'Failed to remove member');
+      }
+    } catch (error) {
+      console.error('Failed to remove member:', error);
+      alert('Failed to remove member');
+    }
+  }
+
+  async function updateRole(memberId: string, newRole: string) {
+    try {
+      const res = await apiFetch(`/api/team/members/${memberId}/role`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': session?.user?.email || '',
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      
+      if (res.ok) {
+        await loadTeamMembers();
+      } else {
+        const data = await res.json();
+        alert(data.error?.message || 'Failed to update role');
+      }
+    } catch (error) {
+      console.error('Failed to update role:', error);
+      alert('Failed to update role');
+    }
+  }
 
   const supabaseReady = isSupabaseConfigured && Boolean(supabaseBrowser);
   const profileTooltip = supabaseReady
@@ -377,33 +577,193 @@ export function Settings() {
 
       {/* === TEAM === */}
       {tab === "team" && (
-        <Card>
-          <CardHeader
-            title="Team members"
-            description="Workspace member management."
-            trailing={
-              <div className="flex items-center gap-2">
+        <div className="space-y-6">
+          <Card>
+            <CardHeader
+              title="Team members"
+              description="Invite members and manage roles."
+              trailing={
                 <Button
                   variant="primary"
                   leading={<Icon.Plus size={14} />}
-                  disabled
-                  title={COMING_SOON_TITLE}
+                  onClick={() => setShowInviteModal(true)}
                 >
-                  Invite
+                  Invite member
                 </Button>
-                <Badge tone="neutral">Coming soon</Badge>
-              </div>
-            }
-          />
-          <CardBody>
-            <EmptyState
-              icon={<Icon.Users size={20} />}
-              title="Team management is coming soon"
-              description="Invite, role, and SSO provisioning will land with the workspace API."
-              className="min-h-[260px]"
+              }
             />
-          </CardBody>
-        </Card>
+            <CardBody>
+              {loadingTeam ? (
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-4 text-[12px] text-bone-mid">
+                  Loading team members...
+                </div>
+              ) : teamMembers.length === 0 ? (
+                <EmptyState
+                  icon={<Icon.Users size={20} />}
+                  title="No team members yet"
+                  description="Invite your first team member to start collaborating."
+                  className="min-h-[260px]"
+                />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="border-b border-line-1 text-left">
+                        <th className="pb-3 font-medium text-bone-low">Member</th>
+                        <th className="pb-3 font-medium text-bone-low">Role</th>
+                        <th className="pb-3 font-medium text-bone-low">Status</th>
+                        <th className="pb-3 font-medium text-bone-low">Invited</th>
+                        <th className="pb-3 font-medium text-bone-low text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {teamMembers.map((member) => (
+                        <tr key={member.id} className="border-b border-line-1/50">
+                          <td className="py-3">
+                            <div className="flex items-center gap-3">
+                              <Avatar glyph={member.email.charAt(0).toUpperCase()} size={32} />
+                              <div>
+                                <div className="font-medium text-bone">
+                                  {member.full_name || member.email}
+                                </div>
+                                {member.full_name && (
+                                  <div className="text-[11px] text-bone-mid">{member.email}</div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3">
+                            <select
+                              value={member.role}
+                              onChange={(e) => { void updateRole(member.id, e.target.value); }}
+                              className="rounded border border-line-1 bg-ink-2/40 px-2 py-1 text-[12px] text-bone"
+                            >
+                              <option value="owner">Owner</option>
+                              <option value="admin">Admin</option>
+                              <option value="developer">Developer</option>
+                              <option value="analyst">Analyst</option>
+                              <option value="member">Member</option>
+                            </select>
+                          </td>
+                          <td className="py-3">
+                            <Badge
+                              tone={member.status === 'active' ? 'ok' : 'neutral'}
+                            >
+                              {member.status}
+                            </Badge>
+                          </td>
+                          <td className="py-3 text-bone-mid">
+                            {new Date(member.invited_at).toLocaleDateString()}
+                          </td>
+                          <td className="py-3 text-right">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => { void removeMember(member.id); }}
+                            >
+                              Remove
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Role descriptions card */}
+          <Card>
+            <CardHeader title="Role permissions" />
+            <CardBody className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3">
+                  <div className="text-[13px] font-medium text-bone mb-1">Owner</div>
+                  <div className="text-[12px] text-bone-mid">
+                    Full access to all features and settings, including billing and team management.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3">
+                  <div className="text-[13px] font-medium text-bone mb-1">Admin</div>
+                  <div className="text-[12px] text-bone-mid">
+                    Manage team, apps, and campaigns. Can invite and remove members.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3">
+                  <div className="text-[13px] font-medium text-bone mb-1">Developer</div>
+                  <div className="text-[12px] text-bone-mid">
+                    Build and update apps, campaigns, and builds. Create API keys.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3">
+                  <div className="text-[13px] font-medium text-bone mb-1">Analyst</div>
+                  <div className="text-[12px] text-bone-mid">
+                    View analytics, reports, and campaigns. Read-only access.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3">
+                  <div className="text-[13px] font-medium text-bone mb-1">Member</div>
+                  <div className="text-[12px] text-bone-mid">
+                    Basic read-only access to apps and campaigns.
+                  </div>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
+
+      {/* Invite Modal */}
+      {showInviteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-lg border border-line-1 bg-ink p-6">
+            <div className="mb-4 text-[16px] font-medium text-bone">Invite team member</div>
+            <div className="space-y-4">
+              <Field label="Email address">
+                <Input
+                  type="email"
+                  placeholder="colleague@company.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                />
+              </Field>
+              <Field label="Role">
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value)}
+                  className="w-full rounded border border-line-1 bg-ink-2/40 px-3 py-2 text-[13px] text-bone"
+                >
+                  <option value="member">Member - Read-only access</option>
+                  <option value="analyst">Analyst - View analytics</option>
+                  <option value="developer">Developer - Build and update</option>
+                  <option value="admin">Admin - Manage team</option>
+                  <option value="owner">Owner - Full access</option>
+                </select>
+              </Field>
+            </div>
+            <div className="mt-6 flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowInviteModal(false);
+                  setInviteEmail("");
+                  setInviteRole("member");
+                }}
+                disabled={inviting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => { void inviteMember(); }}
+                disabled={!inviteEmail || inviting}
+              >
+                {inviting ? "Sending..." : "Send invite"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* === BILLING === */}
@@ -412,33 +772,135 @@ export function Settings() {
           <Card>
             <CardHeader
               title="Current plan"
+              description={subscription ? `${subscription.plan_name} - ${subscription.status}` : 'No active subscription'}
               trailing={
-                <div className="flex items-center gap-2">
+                subscription && subscription.status === 'active' ? (
                   <Button
                     variant="secondary"
-                    disabled
-                    title="Plan changes will be available once billing is connected."
+                    onClick={() => { void handleCancelSubscription(); }}
                   >
-                    Change plan
+                    Cancel subscription
                   </Button>
-                  <Badge tone="neutral">Coming soon</Badge>
-                </div>
+                ) : null
               }
             />
             <CardBody>
-              <div className="rounded-lg border border-line-1 bg-ink-2/40 p-4 text-[12px] text-bone-mid">
-                Plan and usage metrics will appear here once billing is connected.
-              </div>
+              {loadingBilling ? (
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-4 text-[12px] text-bone-mid">
+                  Loading billing information...
+                </div>
+              ) : subscription ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4 text-[13px]">
+                    <div>
+                      <div className="text-bone-low">Plan</div>
+                      <div className="font-medium text-bone">{subscription.plan_name}</div>
+                    </div>
+                    <div>
+                      <div className="text-bone-low">Status</div>
+                      <div className="font-medium text-bone capitalize">{subscription.status}</div>
+                    </div>
+                    <div>
+                      <div className="text-bone-low">Started</div>
+                      <div className="font-medium text-bone">
+                        {new Date(subscription.started_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    {subscription.ends_at && (
+                      <div>
+                        <div className="text-bone-low">Ends</div>
+                        <div className="font-medium text-bone">
+                          {new Date(subscription.ends_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-line-1 bg-ink-2/40 p-4 text-[12px] text-bone-mid">
+                  You're currently on the free Starter plan. Upgrade to unlock more features.
+                </div>
+              )}
             </CardBody>
           </Card>
+
+          {billingPlans.length > 0 && (
+            <Card>
+              <CardHeader 
+                title="Available plans"
+                trailing={
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setBillingInterval('monthly')}
+                      className={`px-3 py-1 text-[12px] rounded ${billingInterval === 'monthly' ? 'bg-signal text-ink' : 'bg-ink-2/40 text-bone-mid'}`}
+                    >
+                      Monthly
+                    </button>
+                    <button
+                      onClick={() => setBillingInterval('yearly')}
+                      className={`px-3 py-1 text-[12px] rounded ${billingInterval === 'yearly' ? 'bg-signal text-ink' : 'bg-ink-2/40 text-bone-mid'}`}
+                    >
+                      Yearly
+                    </button>
+                  </div>
+                }
+              />
+              <CardBody>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {billingPlans.map((plan) => {
+                    const price = billingInterval === 'monthly' ? plan.priceMonthly : plan.priceYearly;
+                    const isCurrentPlan = subscription?.plan_name === plan.name;
+                    return (
+                      <div
+                        key={plan.id}
+                        className={`rounded-lg border p-4 ${isCurrentPlan ? 'border-signal bg-signal/5' : 'border-line-1 bg-ink-2/40'}`}
+                      >
+                        <div className="text-[16px] font-medium text-bone mb-1">{plan.name}</div>
+                        <div className="text-[24px] font-bold text-bone mb-4">
+                          ${price}
+                          <span className="text-[14px] text-bone-mid font-normal">
+                            /{billingInterval === 'monthly' ? 'mo' : 'yr'}
+                          </span>
+                        </div>
+                        <ul className="space-y-2 mb-4">
+                          {plan.features.map((feature: string, idx: number) => (
+                            <li key={idx} className="text-[12px] text-bone-mid flex items-center gap-2">
+                              <Icon.Check size={14} className="text-signal" />
+                              {feature}
+                            </li>
+                          ))}
+                        </ul>
+                        {isCurrentPlan ? (
+                          <Badge tone="signal" className="w-full justify-center">Current plan</Badge>
+                        ) : plan.id === 'starter' ? (
+                          <Button variant="secondary" disabled className="w-full">
+                            Free plan
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            onClick={() => { void handleUpgrade(plan.id); }}
+                            className="w-full"
+                            disabled={!plan.stripePriceIdMonthly && !plan.stripePriceIdYearly}
+                          >
+                            Upgrade
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           <Card>
             <CardHeader title="Invoices" />
             <CardBody>
               <EmptyState
                 icon={<Icon.Zap size={20} />}
-                title="Billing is not connected"
-                description="Stripe and the customer billing portal will be wired up in a separate workstream. Invoices will appear here once that's ready."
+                title="No invoices yet"
+                description="Your invoices will appear here once you have an active subscription."
                 className="min-h-[220px]"
               />
             </CardBody>
@@ -479,35 +941,294 @@ export function Settings() {
       )}
 
       {/* === WEBHOOKS === */}
-      {tab === "webhooks" && (
-        <Card>
-          <CardHeader
-            title="Webhook endpoints"
-            description="HTTP callbacks for real-time delivery events."
-            trailing={
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="primary"
-                  leading={<Icon.Plus size={14} />}
-                  disabled
-                  title="Webhook delivery is not wired up yet."
-                >
-                  Add webhook
-                </Button>
-                <Badge tone="neutral">Coming soon</Badge>
+      {tab === "webhooks" && <WebhooksTab />}
+    </>
+  );
+}
+
+// Webhook event types
+const WEBHOOK_EVENTS = [
+  { value: "campaign.sent", label: "Campaign Sent", desc: "Triggered when a campaign finishes sending" },
+  { value: "campaign.delivered", label: "Campaign Delivered", desc: "Triggered when a message is delivered" },
+  { value: "campaign.opened", label: "Campaign Opened", desc: "Triggered when a user opens a notification" },
+  { value: "campaign.clicked", label: "Campaign Clicked", desc: "Triggered when a user clicks a notification" },
+  { value: "campaign.failed", label: "Campaign Failed", desc: "Triggered when a campaign fails" },
+  { value: "app.created", label: "App Created", desc: "Triggered when a new app is created" },
+  { value: "build.completed", label: "Build Completed", desc: "Triggered when a build finishes successfully" },
+  { value: "build.failed", label: "Build Failed", desc: "Triggered when a build fails" },
+];
+
+interface Webhook {
+  id: string;
+  url: string;
+  secret: string;
+  events: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+function WebhooksTab() {
+  const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newUrl, setNewUrl] = useState("");
+  const [selectedEvents, setSelectedEvents] = useState<string[]>(["campaign.sent"]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadWebhooks();
+  }, []);
+
+  async function loadWebhooks() {
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/webhooks");
+      const data = await res.json() as { ok: boolean; webhooks: Webhook[] };
+      setWebhooks(data.webhooks);
+    } catch (err) {
+      console.error("Failed to load webhooks:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createWebhook() {
+    if (!newUrl || !newUrl.startsWith("http")) {
+      setError("Please enter a valid HTTP(S) URL");
+      return;
+    }
+    if (selectedEvents.length === 0) {
+      setError("Please select at least one event");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await apiFetch("/api/webhooks", {
+        method: "POST",
+        body: JSON.stringify({ url: newUrl, events: selectedEvents }),
+      });
+
+      setNewUrl("");
+      setSelectedEvents(["campaign.sent"]);
+      setShowAddForm(false);
+      await loadWebhooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create webhook");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleWebhook(id: string, is_active: boolean) {
+    try {
+      await apiFetch(`/api/webhooks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active }),
+      });
+      await loadWebhooks();
+    } catch (err) {
+      console.error("Failed to toggle webhook:", err);
+    }
+  }
+
+  async function deleteWebhook(id: string) {
+    if (!confirm("Are you sure you want to delete this webhook?")) return;
+
+    try {
+      await apiFetch(`/api/webhooks/${id}`, { method: "DELETE" });
+      await loadWebhooks();
+    } catch (err) {
+      console.error("Failed to delete webhook:", err);
+    }
+  }
+
+  function copySecret(secret: string) {
+    void navigator.clipboard.writeText(secret);
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardBody>
+          <div className="flex items-center justify-center py-12">
+            <div className="text-bone-mid">Loading webhooks...</div>
+          </div>
+        </CardBody>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader
+          title="Webhook endpoints"
+          description="HTTP callbacks for real-time delivery events."
+          trailing={
+            <Button
+              variant="primary"
+              leading={<Icon.Plus size={14} />}
+              onClick={() => setShowAddForm(!showAddForm)}
+            >
+              Add webhook
+            </Button>
+          }
+        />
+        <CardBody>
+          {showAddForm && (
+            <div className="mb-6 space-y-4 rounded-lg border border-line-1 bg-ink-2/40 p-4">
+              <Field label="Webhook URL">
+                <Input
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="https://api.example.com/webhooks"
+                  type="url"
+                />
+              </Field>
+
+              <div>
+                <div className="mb-2 text-[13px] font-medium text-bone">Events</div>
+                <div className="space-y-2">
+                  {WEBHOOK_EVENTS.map((event) => (
+                    <label
+                      key={event.value}
+                      className="flex items-start gap-3 rounded-lg border border-line-1 bg-ink-1/40 p-3 cursor-pointer hover:bg-ink-1/60"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedEvents.includes(event.value)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedEvents([...selectedEvents, event.value]);
+                          } else {
+                            setSelectedEvents(selectedEvents.filter((ev) => ev !== event.value));
+                          }
+                        }}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1">
+                        <div className="text-[13px] font-medium text-bone">{event.label}</div>
+                        <div className="text-[12px] text-bone-mid">{event.desc}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
-            }
-          />
-          <CardBody>
+
+              {error && <div className="text-[12px] text-danger">{error}</div>}
+
+              <div className="flex gap-2">
+                <Button variant="primary" onClick={() => { void createWebhook(); }} disabled={saving}>
+                  {saving ? "Creating..." : "Create webhook"}
+                </Button>
+                <Button variant="secondary" onClick={() => setShowAddForm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {webhooks.length === 0 ? (
             <EmptyState
               icon={<Icon.Globe size={20} />}
-              title="Webhooks pending"
-              description="Endpoint configuration, signing secrets, and delivery logs will be available once the webhook delivery service is live."
+              title="No webhooks configured"
+              description="Add your first webhook endpoint to receive real-time notifications about campaigns, builds, and app events."
               className="min-h-[260px]"
             />
-          </CardBody>
-        </Card>
-      )}
-    </>
+          ) : (
+            <div className="space-y-4">
+              {webhooks.map((webhook) => (
+                <div
+                  key={webhook.id}
+                  className="rounded-lg border border-line-1 bg-ink-2/40 p-4 space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="text-[13px] font-medium text-bone truncate">
+                          {webhook.url}
+                        </div>
+                        {webhook.is_active ? (
+                          <Badge tone="ok">Active</Badge>
+                        ) : (
+                          <Badge tone="neutral">Inactive</Badge>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-bone-mid">
+                        Created {new Date(webhook.created_at).toLocaleDateString()}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={webhook.is_active}
+                        onChange={(v) => { void toggleWebhook(webhook.id, v); }}
+                      />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => { void deleteWebhook(webhook.id); }}
+                        title="Delete webhook"
+                      >
+                        <Icon.Trash size={14} />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-medium text-bone-mid mb-1">Events:</div>
+                    <div className="flex flex-wrap gap-1">
+                      {webhook.events.map((event) => (
+                        <Badge key={event} tone="neutral" className="text-[10px]">
+                          {event}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-medium text-bone-mid mb-1">Signing secret:</div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 text-[11px] font-mono text-bone-mid bg-ink-1 px-2 py-1 rounded truncate">
+                        {webhook.secret.slice(0, 32)}...
+                      </code>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => copySecret(webhook.secret)}
+                        title="Copy secret"
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Webhook verification" />
+        <CardBody className="space-y-4">
+          <div className="text-[13px] text-bone-mid">
+            All webhook requests include an <code className="text-bone font-mono text-[12px]">X-Webhook-Signature</code> header containing an HMAC SHA256 signature of the payload. Verify this signature using your signing secret to ensure the request came from ApkZio.
+          </div>
+          <div className="rounded-lg border border-line-1 bg-ink-1 p-3 font-mono text-[11px] text-bone-mid overflow-x-auto">
+            <div>const crypto = require('crypto');</div>
+            <div>const signature = crypto</div>
+            <div>  .createHmac('sha256', YOUR_SECRET)</div>
+            <div>  .update(JSON.stringify(payload))</div>
+            <div>  .digest('hex');</div>
+            <div className="mt-2">// Compare with X-Webhook-Signature header</div>
+          </div>
+        </CardBody>
+      </Card>
+    </div>
   );
 }

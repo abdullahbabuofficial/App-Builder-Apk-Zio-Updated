@@ -18,6 +18,7 @@ import { useToast } from "@/components/ui/Toast";
 import { downloadCsv } from "@/lib/csv";
 import type { AnalyticsOverview, CrashAnalytics } from "@/lib/api";
 import { fetchCrashAnalytics } from "@/lib/api";
+import { useEventTrends } from "@/hooks/useAppTrends";
 
 export function Analytics() {
   const { apps, useLiveApi } = useApkzio();
@@ -194,45 +195,14 @@ export function Analytics() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((e, i) => {
-                  const trendData: number[] = [];
-                  const isUp = e.deltaPct > 0;
-                  return (
-                    <tr key={e.id} className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-3">
-                          <div className="grid h-8 w-8 place-items-center rounded border border-line-1 bg-ink-2 text-bone-mid">
-                            <Icon.Zap size={13} />
-                          </div>
-                          <div>
-                            <div className="font-mono font-medium text-bone">{e.name}</div>
-                            <div className="text-[11px] text-bone-low">last fired {relTime(Date.now() - i * 60_000)}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono num text-bone">{commas(e.count)}</td>
-                      <td className="hidden px-4 py-3 text-right font-mono num text-bone-mid sm:table-cell">{commas(e.uniqueDevices)}</td>
-                      <td className="hidden px-4 py-3 text-right md:table-cell">
-                        <span className={cn("inline-flex items-center gap-1 font-mono num", isUp ? "text-ok" : "text-danger")}>
-                          {isUp ? "↑" : "↓"} {pct(Math.abs(e.deltaPct))}
-                        </span>
-                      </td>
-                      <td className="hidden px-4 py-3 text-right lg:table-cell">
-                        <div className="ml-auto w-fit"><Sparkline data={trendData} color={isUp ? "#CDFF3F" : "#FF8A4C"} width={88} height={28} /></div>
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label={`Open ${e.name} event details`}
-                          onClick={() => setSelectedEvent(e)}
-                        >
-                          <Icon.ArrowRight size={14} />
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {filtered.map((e, i) => (
+                  <EventRow 
+                    key={e.id} 
+                    event={e} 
+                    index={i}
+                    onSelect={() => setSelectedEvent(e)} 
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -280,26 +250,47 @@ export function Analytics() {
           </>
         }
       >
-        {selectedEvent && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
-              <EventMetric label="Count" value={commas(selectedEvent.count)} />
-              <EventMetric label="Devices" value={commas(selectedEvent.uniqueDevices)} />
-              <EventMetric label="Delta" value={pct(selectedEvent.deltaPct)} tone={selectedEvent.deltaPct >= 0 ? "ok" : "danger"} />
-            </div>
-            <div className="rounded-lg border border-line-1 bg-ink-2/50 p-4">
-              <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-bone-low">Trend</div>
-              <AreaChart data={installs} height={180} showAxis={false} />
-            </div>
-            <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3 font-mono text-[11px] text-bone-mid">
-              <div>event_id: <span className="text-bone">{selectedEvent.id}</span></div>
-              <div className="mt-1">scope: <span className="text-bone">{appId === "all" ? "all apps" : appId}</span></div>
-              <div className="mt-1">range: <span className="text-bone">{range}</span></div>
-            </div>
-          </div>
-        )}
+        {selectedEvent && <EventDetailsModal event={selectedEvent} range={range} appId={appId} />}
       </Modal>
     </>
+  );
+}
+
+function EventDetailsModal({ 
+  event, 
+  range, 
+  appId 
+}: { 
+  event: AnalyticsOverview["recentEvents"][number]; 
+  range: string;
+  appId: string;
+}) {
+  const days = range === "30d" ? 30 : range === "90d" ? 90 : 7;
+  const eventTrends = useEventTrends(event.name, days);
+  
+  // Convert to Point[] format for AreaChart
+  const chartData = eventTrends.map((v, i) => ({
+    t: Date.now() - (eventTrends.length - 1 - i) * 86400_000,
+    v
+  }));
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <EventMetric label="Count" value={commas(event.count)} />
+        <EventMetric label="Devices" value={commas(event.uniqueDevices)} />
+        <EventMetric label="Delta" value={pct(event.deltaPct)} tone={event.deltaPct >= 0 ? "ok" : "danger"} />
+      </div>
+      <div className="rounded-lg border border-line-1 bg-ink-2/50 p-4">
+        <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-bone-low">Trend</div>
+        <AreaChart data={chartData} height={180} showAxis={false} />
+      </div>
+      <div className="rounded-lg border border-line-1 bg-ink-2/40 p-3 font-mono text-[11px] text-bone-mid">
+        <div>event_id: <span className="text-bone">{event.id}</span></div>
+        <div className="mt-1">scope: <span className="text-bone">{appId === "all" ? "all apps" : appId}</span></div>
+        <div className="mt-1">range: <span className="text-bone">{range}</span></div>
+      </div>
+    </div>
   );
 }
 
@@ -311,5 +302,61 @@ function EventMetric({ label, value, tone }: { label: string; value: string; ton
         {value}
       </div>
     </div>
+  );
+}
+
+function EventRow({ 
+  event, 
+  index,
+  onSelect 
+}: { 
+  event: AnalyticsOverview["recentEvents"][number]; 
+  index: number;
+  onSelect: () => void;
+}) {
+  const trendData = useEventTrends(event.name, 14);
+  const isUp = event.deltaPct > 0;
+  
+  return (
+    <tr className="border-b border-line-1/70 last:border-b-0 hover:bg-ink-2/60">
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-3">
+          <div className="grid h-8 w-8 place-items-center rounded border border-line-1 bg-ink-2 text-bone-mid">
+            <Icon.Zap size={13} />
+          </div>
+          <div>
+            <div className="font-mono font-medium text-bone">{event.name}</div>
+            <div className="text-[11px] text-bone-low">last fired {relTime(Date.now() - index * 60_000)}</div>
+          </div>
+        </div>
+      </td>
+      <td className="px-4 py-3 text-right font-mono num text-bone">{commas(event.count)}</td>
+      <td className="hidden px-4 py-3 text-right font-mono num text-bone-mid sm:table-cell">{commas(event.uniqueDevices)}</td>
+      <td className="hidden px-4 py-3 text-right md:table-cell">
+        <span className={cn("inline-flex items-center gap-1 font-mono num", isUp ? "text-ok" : "text-danger")}>
+          {isUp ? "↑" : "↓"} {pct(Math.abs(event.deltaPct))}
+        </span>
+      </td>
+      <td className="hidden px-4 py-3 text-right lg:table-cell">
+        <div className="ml-auto w-fit">
+          <Sparkline 
+            data={trendData} 
+            color={isUp ? "#CDFF3F" : "#FF8A4C"} 
+            width={88} 
+            height={28} 
+          />
+        </div>
+      </td>
+      <td className="px-5 py-3 text-right">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Open ${event.name} event details`}
+          onClick={onSelect}
+        >
+          <Icon.ArrowRight size={14} />
+        </Button>
+      </td>
+    </tr>
   );
 }

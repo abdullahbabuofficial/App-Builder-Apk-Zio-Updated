@@ -339,11 +339,17 @@ export function DashboardLayout({ children, currentPage = 'overview' }: Dashboar
             {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
 
-          <Link to="/" className="flex items-center gap-2">
-            <Rocket className="h-6 w-6 text-primary" />
-            <span className="font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-              ApkZio
-            </span>
+          <Link to="/" className="flex items-center gap-2 group">
+            <img 
+              src="/logo.png" 
+              alt="ApkZio" 
+              className="h-8 w-auto transition-transform duration-300 group-hover:scale-105 dark:hidden" 
+            />
+            <img 
+              src="/logo-dark.png" 
+              alt="ApkZio" 
+              className="h-8 w-auto transition-transform duration-300 group-hover:scale-105 hidden dark:block" 
+            />
           </Link>
 
           <div className="flex-1 max-w-md mx-auto">

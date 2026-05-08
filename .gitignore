@@ -18,6 +18,10 @@ coverage/
 # Operator-only secrets (never commit)
 .secrets/
 *.secret.env
+GENERATED_KEYS.md
+APKZIO_USER_CREATED.md
+**/server.log
+APKZIO_CREDENTIALS.txt
 
 # local-api build artifacts
 backends/local-api/.builds/

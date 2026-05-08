@@ -6,15 +6,15 @@ function makeStore(): ApkZioStore {
 }
 
 describe("campaign draft send", () => {
-  it("sends duplicated draft campaigns and recalculates delivery counts", () => {
+  it("sends duplicated draft campaigns and recalculates delivery counts", async () => {
     const store = makeStore();
     const source = store.campaigns[0]!;
-    const draft = store.duplicateCampaign(source.id);
+    const draft = await store.duplicateCampaign(source.id);
 
     expect(draft.status).toBe("draft");
     expect(draft.sent_count).toBe(0);
 
-    const sent = store.sendDraftCampaign(draft.id);
+    const sent = await store.sendDraftCampaign(draft.id);
 
     expect(sent.status).toBe("sent");
     expect(sent.sent_at).toEqual(expect.any(String));
@@ -24,24 +24,24 @@ describe("campaign draft send", () => {
     expect(sent.delivered_count).toBeLessThanOrEqual(sent.sent_count);
   });
 
-  it("rejects non-draft campaign sends", () => {
+  it("rejects non-draft campaign sends", async () => {
     const store = makeStore();
     const alreadySent = store.campaigns.find((campaign) => campaign.status === "sent")!;
 
-    expect(() => store.sendDraftCampaign(alreadySent.id)).toThrow("invalid_state");
+    await expect(() => store.sendDraftCampaign(alreadySent.id)).rejects.toThrow("invalid_state");
   });
 });
 
 describe("subscriber token actions", () => {
-  it("toggles subscriber validity for admin token management", () => {
+  it("toggles subscriber validity for admin token management", async () => {
     const store = makeStore();
     const app = [...store.apps.values()][0]!;
-    const sub = store.getSubscribersForApp(app.id)[0]!;
+    const sub = (await store.getSubscribersForApp(app.id))[0]!;
 
-    const invalid = store.updateSubscriberValidity(sub.id, false);
+    const invalid = await store.updateSubscriberValidity(sub.id, false);
     expect(invalid.is_valid).toBe(false);
 
-    const restored = store.updateSubscriberValidity(sub.id, true);
+    const restored = await store.updateSubscriberValidity(sub.id, true);
     expect(restored.is_valid).toBe(true);
   });
 });

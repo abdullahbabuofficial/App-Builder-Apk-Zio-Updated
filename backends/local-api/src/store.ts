@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 
 import type { AuthUser } from "./auth.js";
 import { hashPassword } from "./auth.js";
+import { query } from "./db.js";
 
 // --- Shared shapes (JSON-serializable for responses) ---
 
@@ -379,7 +380,9 @@ function normalizeWpSiteUrl(raw: string): string {
 export class ApkZioStore {
   readonly demoServiceKey: string;
   private readonly keysByHash = new Map<string, string>(); // sha256 hex -> raw key
+  private readonly useDatabase: boolean;
 
+  // Legacy in-memory storage (kept for backward compatibility during migration)
   apps = new Map<string, AndroidApp>();
   devices = new Map<string, Device>();
   subscribers = new Map<string, StoredSubscriber>();
@@ -388,6 +391,17 @@ export class ApkZioStore {
   campaigns: Campaign[] = [];
   apiKeys: ApiKey[] = [];
   builds: ApkBuild[] = [];
+  /** Analytics events storage */
+  analyticsEvents: Array<{
+    id: number;
+    app_id: string;
+    event_type: string;
+    event_data: Record<string, any> | null;
+    device_id: string;
+    country_code: string | null;
+    timestamp: string;
+  }> = [];
+  private eventIdCounter = 1;
   /**
    * Real per-build log lines, written by the WebView runner. Seed builds don't
    * have an entry here — we fall back to `synthesizeBuildLogs` for them so the
@@ -423,9 +437,12 @@ export class ApkZioStore {
   contactMessages: ContactMessage[] = [];
   private invoiceCounter = 1000;
 
-  constructor(demoServiceKey: string) {
+  constructor(demoServiceKey: string, useDatabase = false) {
     this.demoServiceKey = demoServiceKey;
-    this.seed();
+    this.useDatabase = useDatabase;
+    if (!useDatabase) {
+      this.seed();
+    }
   }
 
   private seed(): void {
@@ -562,6 +579,56 @@ export class ApkZioStore {
         duration_ms: 120_000,
         triggered_by: "ci-bot",
       });
+    }
+
+    // Sample crashes
+    const CRASH_TYPES = ["NullPointerException", "OutOfMemoryError", "NetworkException", "IllegalStateException"];
+    for (const app of ownerApps) {
+      const crashCount = Math.floor(5 + r() * 15);
+      for (let i = 0; i < crashCount; i++) {
+        const crashType = CRASH_TYPES[Math.floor(r() * CRASH_TYPES.length)]!;
+        this.crashes.push({
+          id: uuid(),
+          app_id: app.id,
+          device_id: null,
+          crash_type: crashType,
+          stack_trace: `java.lang.${crashType}\n  at com.example.MainActivity.onCreate(MainActivity.java:42)\n  at android.app.Activity.performCreate(Activity.java:8000)`,
+          app_version: "2.4.1",
+          os_version: "14",
+          manufacturer: MANUFACTURERS[Math.floor(r() * MANUFACTURERS.length)]!,
+          model: "Pixel 8",
+          metadata: {},
+          created_at: minutesAgoIso(r, 0, 60 * 24 * 7),
+        });
+      }
+    }
+
+    // Sample campaign errors for campaigns with failures
+    const FCM_ERROR_CODES = [
+      { code: "UNREGISTERED", message: "Token no longer valid; subscriber removed.", weight: 0.6 },
+      { code: "INVALID_ARGUMENT", message: "Token format rejected by FCM.", weight: 0.2 },
+      { code: "QUOTA_EXCEEDED", message: "Project send quota hit; retried with backoff.", weight: 0.12 },
+      { code: "UNAVAILABLE", message: "FCM transient unavailability.", weight: 0.08 },
+    ];
+    for (const campaign of this.campaigns) {
+      if (campaign.failed_count > 0) {
+        let remaining = campaign.failed_count;
+        for (const errorSpec of FCM_ERROR_CODES) {
+          const count = Math.floor(campaign.failed_count * errorSpec.weight);
+          for (let i = 0; i < count && remaining > 0; i++) {
+            this.campaignErrors.push({
+              id: uuid(),
+              campaign_id: campaign.id,
+              error_code: errorSpec.code,
+              error_message: errorSpec.message,
+              subscriber_id: null,
+              device_info: {},
+              created_at: campaign.sent_at ?? campaign.created_at,
+            });
+            remaining--;
+          }
+        }
+      }
     }
 
     this.seedWpData();
@@ -881,6 +948,8 @@ export class ApkZioStore {
   }
 
   findAppByKey(appKey: string): AndroidApp | undefined {
+    // Always use in-memory cache for synchronous lookup
+    // Database apps are cached on load
     return [...this.apps.values()].find((a) => a.app_key === appKey);
   }
 
@@ -893,27 +962,78 @@ export class ApkZioStore {
     if (k) k.last_used_at = isoNow();
   }
 
-  listApps(): AndroidApp[] {
-    return [...this.apps.values()];
+  async listApps(): Promise<AndroidApp[]> {
+    if (!this.useDatabase) {
+      return [...this.apps.values()];
+    }
+
+    const { rows } = await query<AndroidApp>(`
+      SELECT 
+        id, owner_id, name, package_name, app_key, icon_glyph, icon_color,
+        status, fcm_project_id, live_users, active_devices_24h, total_installs,
+        delivery_rate::float as delivery_rate, 
+        0 as open_rate,
+        0 as total_pushes_sent,
+        created_at
+      FROM android_apps 
+      ORDER BY created_at DESC
+    `);
+    return rows;
   }
 
-  getDevicesForApp(appId: string): Device[] {
-    return [...this.devices.values()].filter((d) => d.app_id === appId).sort((a, b) => +new Date(b.last_seen_at) - +new Date(a.last_seen_at));
+  async getDevicesForApp(appId: string): Promise<Device[]> {
+    if (!this.useDatabase) {
+      return [...this.devices.values()].filter((d) => d.app_id === appId).sort((a, b) => +new Date(b.last_seen_at) - +new Date(a.last_seen_at));
+    }
+
+    const { rows } = await query<Device>(`
+      SELECT 
+        id, app_id, install_hash, manufacturer, model, os_version, app_version,
+        country_code, is_active, last_seen_at, 
+        created_at as first_seen_at
+      FROM devices
+      WHERE app_id = $1
+      ORDER BY last_seen_at DESC
+    `, [appId]);
+    return rows;
   }
 
-  getSubscribersForApp(appId: string): Subscriber[] {
-    return [...this.subscribers.values()]
-      .filter((s) => s.app_id === appId)
-      .map(({ _fcm_token: _, ...rest }) => rest);
+  async getSubscribersForApp(appId: string): Promise<Subscriber[]> {
+    if (!this.useDatabase) {
+      return [...this.subscribers.values()]
+        .filter((s) => s.app_id === appId)
+        .map(({ _fcm_token: _, ...rest }) => rest);
+    }
+
+    const { rows } = await query<Subscriber>(`
+      SELECT 
+        id, app_id, fcm_token as device_id, fcm_token_redacted, is_valid, last_seen_at
+      FROM push_subscribers
+      WHERE app_id = $1
+      ORDER BY last_seen_at DESC
+    `, [appId]);
+    return rows;
   }
 
-  updateSubscriberValidity(id: string, isValid: boolean): Subscriber {
-    const sub = this.subscribers.get(id);
-    if (!sub) throw new Error("not_found");
-    sub.is_valid = isValid;
-    sub.last_seen_at = isoNow();
-    const { _fcm_token: _, ...publicSub } = sub;
-    return publicSub;
+  async updateSubscriberValidity(id: string, isValid: boolean): Promise<Subscriber> {
+    if (!this.useDatabase) {
+      const sub = this.subscribers.get(id);
+      if (!sub) throw new Error("not_found");
+      sub.is_valid = isValid;
+      sub.last_seen_at = isoNow();
+      const { _fcm_token: _, ...publicSub } = sub;
+      return publicSub;
+    }
+
+    const { rows } = await query<Subscriber>(`
+      UPDATE push_subscribers
+      SET is_valid = $1, last_seen_at = NOW()
+      WHERE id = $2
+      RETURNING id, app_id, fcm_token as device_id, fcm_token_redacted, is_valid, last_seen_at
+    `, [isValid, id]);
+
+    if (rows.length === 0) throw new Error("not_found");
+    return rows[0]!;
   }
 
   /** Resolve targeting for a campaign */
@@ -981,13 +1101,15 @@ export class ApkZioStore {
   recalcAppMetrics(appId: string): void {
     const app = this.apps.get(appId);
     if (!app) return;
-    const devs = this.getDevicesForApp(appId);
-    const now = Date.now();
-    const dayMs = 86400_000;
-    const fiveMin = 5 * 60_000;
-    app.total_installs = devs.length;
-    app.active_devices_24h = devs.filter((d) => now - +new Date(d.last_seen_at) <= dayMs).length;
-    app.live_users = devs.filter((d) => now - +new Date(d.last_seen_at) <= fiveMin).length;
+    void (async () => {
+      const devs = await this.getDevicesForApp(appId);
+      const now = Date.now();
+      const dayMs = 86400_000;
+      const fiveMin = 5 * 60_000;
+      app.total_installs = devs.length;
+      app.active_devices_24h = devs.filter((d) => now - +new Date(d.last_seen_at) <= dayMs).length;
+      app.live_users = devs.filter((d) => now - +new Date(d.last_seen_at) <= fiveMin).length;
+    })();
   }
 
   sdkInit(body: {
@@ -1010,7 +1132,7 @@ export class ApkZioStore {
     if (/^pk_[a-fA-F0-9]{48}$/.test(appKey)) appKey = `pk_${appKey.slice(3).toLowerCase()}`;
     const app = this.findAppByKey(appKey);
     if (!app) throw new Error("invalid_app_key");
-    if (app.status !== "active") throw new Error("app_suspended");
+    if (app && app.status !== "active") throw new Error("app_suspended");
 
     const ih = installHash(appKey, body.android_id);
     let device = [...this.devices.values()].find((d) => d.app_id === app.id && d.install_hash === ih);
@@ -1104,7 +1226,111 @@ export class ApkZioStore {
     this.recalcAppMetrics(device.app_id);
   }
 
-  createCampaign(input: {
+  /**
+   * Insert analytics events in batch
+   */
+  insertEvents(events: Array<{
+    app_id: string;
+    event_type: string;
+    device_id: string;
+    country_code?: string;
+    event_data?: Record<string, any>;
+    timestamp?: string;
+  }>): void {
+    const now = new Date().toISOString();
+    for (const event of events) {
+      this.analyticsEvents.push({
+        id: this.eventIdCounter++,
+        app_id: event.app_id,
+        event_type: event.event_type,
+        event_data: event.event_data ?? null,
+        device_id: event.device_id,
+        country_code: event.country_code ?? null,
+        timestamp: event.timestamp ?? now,
+      });
+    }
+  }
+
+  /**
+   * Get event counts for an app grouped by time
+   * Returns array of counts for the specified time range
+   */
+  getEventCounts(
+    appId: string,
+    eventType: string,
+    range: 'hour' | 'day' | 'week' | 'month'
+  ): number[] {
+    const now = new Date();
+    const filtered = this.analyticsEvents.filter(
+      (e) => e.app_id === appId && e.event_type === eventType
+    );
+
+    // Determine time buckets based on range
+    let buckets: number[];
+    let bucketSize: number;
+    let bucketCount: number;
+
+    switch (range) {
+      case 'hour':
+        bucketCount = 12; // 12x5min buckets
+        bucketSize = 5 * 60 * 1000; // 5 minutes in ms
+        break;
+      case 'day':
+        bucketCount = 24; // 24 hours
+        bucketSize = 60 * 60 * 1000; // 1 hour in ms
+        break;
+      case 'week':
+        bucketCount = 7; // 7 days
+        bucketSize = 24 * 60 * 60 * 1000; // 1 day in ms
+        break;
+      case 'month':
+        bucketCount = 30; // 30 days
+        bucketSize = 24 * 60 * 60 * 1000; // 1 day in ms
+        break;
+      default:
+        bucketCount = 24;
+        bucketSize = 60 * 60 * 1000;
+    }
+
+    buckets = new Array(bucketCount).fill(0);
+    const startTime = now.getTime() - (bucketCount * bucketSize);
+
+    for (const event of filtered) {
+      const eventTime = new Date(event.timestamp).getTime();
+      if (eventTime >= startTime) {
+        const bucketIndex = Math.floor((eventTime - startTime) / bucketSize);
+        if (bucketIndex >= 0 && bucketIndex < bucketCount) {
+          buckets[bucketIndex]++;
+        }
+      }
+    }
+
+    return buckets;
+  }
+
+  /**
+   * Get total event count for an app and event type
+   */
+  getEventCount(appId: string, eventType: string): number {
+    return this.analyticsEvents.filter(
+      (e) => e.app_id === appId && e.event_type === eventType
+    ).length;
+  }
+
+  /**
+   * Get unique device count for an app and event type
+   */
+  getUniqueDeviceCount(appId: string, eventType: string): number {
+    const devices = new Set<string>();
+    for (const event of this.analyticsEvents) {
+      if (event.app_id === appId && event.event_type === eventType) {
+        devices.add(event.device_id);
+      }
+    }
+    return devices.size;
+  }
+
+  async createCampaign(input: {
     app_id: string;
     title: string;
     body: string;
@@ -1115,17 +1341,58 @@ export class ApkZioStore {
     country_codes?: string[];
     device_ids?: string[];
     scheduled_at?: string | null;
-  }): Campaign {
-    const app = this.apps.get(input.app_id);
-    if (!app) throw new Error("app_not_found");
+  }): Promise<Campaign> {
+    if (!this.useDatabase) {
+      const app = this.apps.get(input.app_id);
+      if (!app) throw new Error("app_not_found");
 
-    const matched = this.matchSubscribers(input.app_id, {
-      type: input.target_type,
-      active_within_minutes: input.active_within_minutes,
-      country_codes: input.country_codes,
-      device_ids: input.device_ids,
-    });
-    const recipients = matched.length;
+      const matched = this.matchSubscribers(input.app_id, {
+        type: input.target_type,
+        active_within_minutes: input.active_within_minutes,
+        country_codes: input.country_codes,
+        device_ids: input.device_ids,
+      });
+      const recipients = matched.length;
+
+      let target_summary = "";
+      if (input.target_type === "all") target_summary = "All subscribers";
+      else if (input.target_type === "active")
+        target_summary = `Active in last ${(input.active_within_minutes ?? 1440) >= 1440 ? `${Math.round((input.active_within_minutes ?? 1440) / 1440)}d` : `${input.active_within_minutes}m`}`;
+      else if (input.target_type === "country") target_summary = (input.country_codes ?? []).join(", ");
+      else target_summary = `${(input.device_ids ?? []).length} devices`;
+
+      const isScheduled = !!input.scheduled_at && +new Date(input.scheduled_at) > Date.now();
+
+      const camp: Campaign = {
+        id: uuid(),
+        app_id: input.app_id,
+        title: input.title,
+        body: input.body,
+        image_url: input.image_url ?? null,
+        click_url: input.click_url ?? null,
+        target_type: input.target_type,
+        target_summary,
+        active_within_minutes: input.active_within_minutes,
+        country_codes: input.target_type === "country" ? input.country_codes ?? [] : undefined,
+        device_ids: input.target_type === "device_list" ? input.device_ids ?? [] : undefined,
+        status: isScheduled ? "scheduled" : "sent",
+        created_at: isoNow(),
+        scheduled_at: isScheduled ? input.scheduled_at! : null,
+        sent_at: isScheduled ? null : isoNow(),
+        recipients_count: recipients,
+        sent_count: isScheduled ? 0 : recipients,
+        delivered_count: isScheduled ? 0 : Math.floor(recipients * 0.84),
+        opened_count: isScheduled ? 0 : Math.floor(recipients * 0.084),
+        clicked_count: isScheduled ? 0 : Math.floor(recipients * 0.017),
+        failed_count: isScheduled ? 0 : Math.max(0, recipients - Math.floor(recipients * 0.84)),
+      };
+
+      this.campaigns.unshift(camp);
+      if (!isScheduled) {
+        app.total_pushes_sent += recipients;
+      }
+      return camp;
+    }
 
     let target_summary = "";
     if (input.target_type === "all") target_summary = "All subscribers";
@@ -1135,152 +1402,253 @@ export class ApkZioStore {
     else target_summary = `${(input.device_ids ?? []).length} devices`;
 
     const isScheduled = !!input.scheduled_at && +new Date(input.scheduled_at) > Date.now();
+    const status = isScheduled ? "scheduled" : "draft";
 
-    const camp: Campaign = {
-      id: uuid(),
-      app_id: input.app_id,
-      title: input.title,
-      body: input.body,
-      image_url: input.image_url ?? null,
-      click_url: input.click_url ?? null,
-      target_type: input.target_type,
+    const { rows } = await query<Campaign>(`
+      INSERT INTO push_campaigns (
+        app_id, title, body, image_url, click_url, status,
+        target_type, active_within_minutes, country_codes, device_ids, target_summary,
+        scheduled_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING *
+    `, [
+      input.app_id,
+      input.title,
+      input.body,
+      input.image_url ?? null,
+      input.click_url ?? null,
+      status,
+      input.target_type,
+      input.active_within_minutes ?? null,
+      input.country_codes ?? null,
+      input.device_ids ?? null,
       target_summary,
-      active_within_minutes: input.active_within_minutes,
-      country_codes: input.target_type === "country" ? input.country_codes ?? [] : undefined,
-      device_ids: input.target_type === "device_list" ? input.device_ids ?? [] : undefined,
-      status: isScheduled ? "scheduled" : "sent",
-      created_at: isoNow(),
-      scheduled_at: isScheduled ? input.scheduled_at! : null,
-      sent_at: isScheduled ? null : isoNow(),
-      recipients_count: recipients,
-      sent_count: isScheduled ? 0 : recipients,
-      delivered_count: isScheduled ? 0 : Math.floor(recipients * 0.84),
-      opened_count: isScheduled ? 0 : Math.floor(recipients * 0.084),
-      clicked_count: isScheduled ? 0 : Math.floor(recipients * 0.017),
-      failed_count: isScheduled ? 0 : Math.max(0, recipients - Math.floor(recipients * 0.84)),
-    };
+      input.scheduled_at ?? null
+    ]);
 
-    this.campaigns.unshift(camp);
-    if (!isScheduled) {
-      app.total_pushes_sent += recipients;
-    }
-    return camp;
+    return rows[0]!;
   }
 
   // --- Apps CRUD ---
 
-  createApp(input: {
+  async createApp(input: {
     name: string;
     package_name: string;
     fcm_project_id?: string | null;
     icon_glyph?: string;
     icon_color?: string;
-  }): AndroidApp {
+    owner_id?: string;
+  }): Promise<AndroidApp> {
     const name = (input.name ?? "").trim();
     const pkg = (input.package_name ?? "").trim();
     if (!name) throw new Error("name_required");
     if (!pkg) throw new Error("package_name_required");
     const glyph = (input.icon_glyph ?? deriveGlyph(name)).slice(0, 4).toUpperCase();
-    const app: AndroidApp = {
-      id: uuid(),
+    const ownerId = input.owner_id ?? "default-owner";
+    
+    if (!this.useDatabase) {
+      const app: AndroidApp = {
+        id: uuid(),
+        name,
+        package_name: pkg,
+        app_key: `pk_${crypto.randomBytes(24).toString("hex")}`,
+        status: "active",
+        icon_color: input.icon_color ?? "from-emerald-500/20 to-emerald-500/5",
+        icon_glyph: glyph,
+        total_installs: 0,
+        active_devices_24h: 0,
+        live_users: 0,
+        total_pushes_sent: 0,
+        delivery_rate: 0,
+        open_rate: 0,
+        created_at: isoNow(),
+        fcm_project_id: input.fcm_project_id ?? null,
+      };
+      this.apps.set(app.id, app);
+      return app;
+    }
+
+    const appKey = `pk_${crypto.randomBytes(24).toString("hex")}`;
+    const { rows } = await query<AndroidApp>(`
+      INSERT INTO android_apps (
+        owner_id, name, package_name, app_key, icon_glyph, icon_color, 
+        status, fcm_project_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)
+      RETURNING 
+        id, owner_id, name, package_name, app_key, icon_glyph, icon_color,
+        status, fcm_project_id, live_users, active_devices_24h, total_installs,
+        delivery_rate::float as delivery_rate,
+        0 as open_rate,
+        0 as total_pushes_sent,
+        created_at
+    `, [
+      ownerId,
       name,
-      package_name: pkg,
-      app_key: `pk_${crypto.randomBytes(24).toString("hex")}`,
-      status: "active",
-      icon_color: input.icon_color ?? "from-emerald-500/20 to-emerald-500/5",
-      icon_glyph: glyph,
-      total_installs: 0,
-      active_devices_24h: 0,
-      live_users: 0,
-      total_pushes_sent: 0,
-      delivery_rate: 0,
-      open_rate: 0,
-      created_at: isoNow(),
-      fcm_project_id: input.fcm_project_id ?? null,
-    };
-    this.apps.set(app.id, app);
-    return app;
+      pkg,
+      appKey,
+      glyph,
+      input.icon_color ?? "from-emerald-500/20 to-emerald-500/5",
+      input.fcm_project_id ?? null
+    ]);
+    return rows[0]!;
   }
 
-  updateApp(id: string, patch: {
+  async updateApp(id: string, patch: {
     name?: string;
     status?: AppStatus;
     fcm_project_id?: string | null;
     icon_glyph?: string;
     icon_color?: string;
-  }): AndroidApp {
-    const a = this.apps.get(id);
-    if (!a) throw new Error("not_found");
-    if (typeof patch.name === "string" && patch.name.trim()) a.name = patch.name.trim();
-    if (patch.status === "active" || patch.status === "paused" || patch.status === "suspended") {
-      a.status = patch.status;
+  }): Promise<AndroidApp> {
+    if (!this.useDatabase) {
+      const a = this.apps.get(id);
+      if (!a) throw new Error("not_found");
+      if (typeof patch.name === "string" && patch.name.trim()) a.name = patch.name.trim();
+      if (patch.status === "active" || patch.status === "paused" || patch.status === "suspended") {
+        a.status = patch.status;
+      }
+      if (patch.fcm_project_id !== undefined) a.fcm_project_id = patch.fcm_project_id;
+      if (typeof patch.icon_glyph === "string" && patch.icon_glyph.trim()) {
+        a.icon_glyph = patch.icon_glyph.slice(0, 4).toUpperCase();
+      }
+      if (typeof patch.icon_color === "string" && patch.icon_color.trim()) {
+        a.icon_color = patch.icon_color;
+      }
+      return a;
     }
-    if (patch.fcm_project_id !== undefined) a.fcm_project_id = patch.fcm_project_id;
+
+    const updates: string[] = [];
+    const values: any[] = [id];
+    let paramIndex = 2;
+
+    if (typeof patch.name === "string" && patch.name.trim()) {
+      updates.push(`name = $${paramIndex++}`);
+      values.push(patch.name.trim());
+    }
+    if (patch.status) {
+      updates.push(`status = $${paramIndex++}`);
+      values.push(patch.status);
+    }
+    if (patch.fcm_project_id !== undefined) {
+      updates.push(`fcm_project_id = $${paramIndex++}`);
+      values.push(patch.fcm_project_id);
+    }
     if (typeof patch.icon_glyph === "string" && patch.icon_glyph.trim()) {
-      a.icon_glyph = patch.icon_glyph.slice(0, 4).toUpperCase();
+      updates.push(`icon_glyph = $${paramIndex++}`);
+      values.push(patch.icon_glyph.slice(0, 4).toUpperCase());
     }
     if (typeof patch.icon_color === "string" && patch.icon_color.trim()) {
-      a.icon_color = patch.icon_color;
+      updates.push(`icon_color = $${paramIndex++}`);
+      values.push(patch.icon_color);
     }
-    return a;
+
+    if (updates.length === 0) {
+      // No updates, just return current app
+      const { rows } = await query<AndroidApp>(
+        'SELECT *, delivery_rate::float as delivery_rate, 0 as open_rate, 0 as total_pushes_sent FROM android_apps WHERE id = $1',
+        [id]
+      );
+      if (rows.length === 0) throw new Error("not_found");
+      return rows[0]!;
+    }
+
+    const { rows } = await query<AndroidApp>(`
+      UPDATE android_apps 
+      SET ${updates.join(', ')} 
+      WHERE id = $1 
+      RETURNING *, delivery_rate::float as delivery_rate, 0 as open_rate, 0 as total_pushes_sent
+    `, values);
+
+    if (rows.length === 0) throw new Error("not_found");
+    return rows[0]!;
   }
 
-  deleteApp(id: string): boolean {
-    if (!this.apps.has(id)) return false;
-    for (const [did, dev] of [...this.devices.entries()]) {
-      if (dev.app_id === id) {
-        const sid = this.deviceSubscriber.get(did);
-        if (sid) {
-          this.subscribers.delete(sid);
-          this.deviceSubscriber.delete(did);
+  async deleteApp(id: string): Promise<boolean> {
+    if (!this.useDatabase) {
+      if (!this.apps.has(id)) return false;
+      for (const [did, dev] of [...this.devices.entries()]) {
+        if (dev.app_id === id) {
+          const sid = this.deviceSubscriber.get(did);
+          if (sid) {
+            this.subscribers.delete(sid);
+            this.deviceSubscriber.delete(did);
+          }
+          this.devices.delete(did);
         }
-        this.devices.delete(did);
       }
-    }
-    for (const [sid, sub] of [...this.subscribers.entries()]) {
-      if (sub.app_id === id) {
-        this.subscribers.delete(sid);
-        this.deviceSubscriber.delete(sub.device_id);
+      for (const [sid, sub] of [...this.subscribers.entries()]) {
+        if (sub.app_id === id) {
+          this.subscribers.delete(sid);
+          this.deviceSubscriber.delete(sub.device_id);
+        }
       }
+      this.campaigns = this.campaigns.filter((c) => c.app_id !== id);
+      this.apiKeys = this.apiKeys.filter((k) => k.app_id !== id);
+      this.builds = this.builds.filter((b) => b.app_id !== id);
+      this.apps.delete(id);
+      return true;
     }
-    this.campaigns = this.campaigns.filter((c) => c.app_id !== id);
-    this.apiKeys = this.apiKeys.filter((k) => k.app_id !== id);
-    this.builds = this.builds.filter((b) => b.app_id !== id);
-    this.apps.delete(id);
-    return true;
+
+    const { rowCount } = await query('DELETE FROM android_apps WHERE id = $1', [id]);
+    return (rowCount ?? 0) > 0;
   }
 
   // --- API keys ---
 
-  createApiKey(input: {
+  async createApiKey(input: {
     app_id: string;
     name: string;
     scopes: string[];
     rate_limit_rpm: number;
     expires_at?: string | null;
     environment?: "live" | "test";
-  }): { api_key: ApiKey; secret: string } {
-    if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+  }): Promise<{ api_key: ApiKey; secret: string }> {
     const env = input.environment === "test" ? "test" : "live";
     const prefix = env === "test" ? "sk_test_" : "sk_live_";
     const random = crypto.randomBytes(16).toString("hex");
     const secret = `${prefix}${random}`;
     const preview = `${prefix}${random.slice(0, 4)}…${random.slice(-5)}`;
-    this.keysByHash.set(sha256hex(secret), secret);
-    const apiKey: ApiKey = {
-      id: uuid(),
-      app_id: input.app_id,
-      name: (input.name ?? "").trim() || "untitled-key",
-      key_preview: preview,
-      scopes: Array.isArray(input.scopes) ? input.scopes.map((s) => String(s)) : [],
-      rate_limit_rpm: Number.isFinite(input.rate_limit_rpm) ? Math.max(1, Math.floor(input.rate_limit_rpm)) : 600,
-      is_active: true,
-      last_used_at: null,
-      expires_at: input.expires_at ?? null,
-      created_at: isoNow(),
-    };
-    this.apiKeys.push(apiKey);
-    return { api_key: apiKey, secret };
+    const keyHash = sha256hex(secret);
+
+    if (!this.useDatabase) {
+      if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+      this.keysByHash.set(keyHash, secret);
+      const apiKey: ApiKey = {
+        id: uuid(),
+        app_id: input.app_id,
+        name: (input.name ?? "").trim() || "untitled-key",
+        key_preview: preview,
+        scopes: Array.isArray(input.scopes) ? input.scopes.map((s) => String(s)) : [],
+        rate_limit_rpm: Number.isFinite(input.rate_limit_rpm) ? Math.max(1, Math.floor(input.rate_limit_rpm)) : 600,
+        is_active: true,
+        last_used_at: null,
+        expires_at: input.expires_at ?? null,
+        created_at: isoNow(),
+      };
+      this.apiKeys.push(apiKey);
+      return { api_key: apiKey, secret };
+    }
+
+    const { rows } = await query<ApiKey>(`
+      INSERT INTO api_keys (
+        app_id, name, key_hash, key_preview, scopes, rate_limit_rpm, expires_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `, [
+      input.app_id,
+      (input.name ?? "").trim() || "untitled-key",
+      keyHash,
+      preview,
+      input.scopes,
+      Number.isFinite(input.rate_limit_rpm) ? Math.max(1, Math.floor(input.rate_limit_rpm)) : 600,
+      input.expires_at ?? null
+    ]);
+
+    this.keysByHash.set(keyHash, secret);
+    return { api_key: rows[0]!, secret };
   }
 
   updateApiKey(id: string, patch: {
@@ -1306,16 +1674,28 @@ export class ApkZioStore {
    * Revoke an API key. We keep the row in `apiKeys` (only flipping is_active=false)
    * to preserve audit/list history rather than hard-deleting.
    */
-  revokeApiKey(id: string): ApiKey {
-    const k = this.apiKeys.find((x) => x.id === id);
-    if (!k) throw new Error("not_found");
-    k.is_active = false;
-    return k;
+  async revokeApiKey(id: string): Promise<ApiKey> {
+    if (!this.useDatabase) {
+      const k = this.apiKeys.find((x) => x.id === id);
+      if (!k) throw new Error("not_found");
+      k.is_active = false;
+      return k;
+    }
+
+    const { rows } = await query<ApiKey>(`
+      UPDATE api_keys
+      SET is_active = false
+      WHERE id = $1
+      RETURNING *
+    `, [id]);
+
+    if (rows.length === 0) throw new Error("not_found");
+    return rows[0]!;
   }
 
   // --- Builds ---
 
-  createBuild(input: {
+  async createBuild(input: {
     app_id: string;
     version_code: number;
     version_name: string;
@@ -1331,35 +1711,51 @@ export class ApkZioStore {
     user_id?: string;
     /** Override the "triggered_by" attribution string. */
     triggered_by?: string;
-  }): ApkBuild {
-    if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+  }): Promise<ApkBuild> {
     const versionCode = Number(input.version_code);
     const versionName = String(input.version_name ?? "").trim();
     if (!Number.isFinite(versionCode) || versionCode <= 0) throw new Error("invalid_version_code");
     if (!versionName) throw new Error("invalid_version_name");
-    const startedAt = isoNow();
-    const build: ApkBuild = {
-      id: uuid(),
-      app_id: input.app_id,
-      version_code: Math.floor(versionCode),
-      version_name: versionName,
-      status: "queued",
-      build_started_at: startedAt,
-      build_completed_at: null,
-      size_bytes: null,
-      output_url: null,
-      duration_ms: null,
-      triggered_by: input.triggered_by ?? "dashboard",
-      source_zip_url: null,
-      // Stored loosely on creation; the runner resolves and overwrites it
-      // with a full `WebViewBuildConfig` once the pipeline starts.
-      config: (input.config as WebViewBuildConfig | null | undefined) ?? null,
-      logs_count: 0,
-      user_id: input.user_id,
-    };
-    this.builds.unshift(build);
-    this.buildLogs.set(build.id, []);
-    return build;
+
+    if (!this.useDatabase) {
+      if (!this.apps.has(input.app_id)) throw new Error("app_not_found");
+      const startedAt = isoNow();
+      const build: ApkBuild = {
+        id: uuid(),
+        app_id: input.app_id,
+        version_code: Math.floor(versionCode),
+        version_name: versionName,
+        status: "queued",
+        build_started_at: startedAt,
+        build_completed_at: null,
+        size_bytes: null,
+        output_url: null,
+        duration_ms: null,
+        triggered_by: input.triggered_by ?? "dashboard",
+        source_zip_url: null,
+        config: (input.config as WebViewBuildConfig | null | undefined) ?? null,
+        logs_count: 0,
+        user_id: input.user_id,
+      };
+      this.builds.unshift(build);
+      this.buildLogs.set(build.id, []);
+      return build;
+    }
+
+    const { rows } = await query<ApkBuild>(`
+      INSERT INTO apk_builds (
+        app_id, version_name, version_code, status, config, build_started_at
+      )
+      VALUES ($1, $2, $3, 'queued', $4, NOW())
+      RETURNING *
+    `, [
+      input.app_id,
+      versionName,
+      Math.floor(versionCode),
+      input.config ? JSON.stringify(input.config) : null
+    ]);
+
+    return rows[0]!;
   }
 
   getBuildById(id: string): ApkBuild | undefined {
@@ -1459,31 +1855,43 @@ export class ApkZioStore {
     return dup;
   }
 
-  sendDraftCampaign(id: string): Campaign {
-    const c = this.campaigns.find((x) => x.id === id);
-    if (!c) throw new Error("not_found");
-    if (c.status !== "draft") throw new Error("invalid_state");
-    const app = this.apps.get(c.app_id);
-    if (!app) throw new Error("app_not_found");
-    const matched = this.matchSubscribers(c.app_id, {
-      type: c.target_type,
-      active_within_minutes: c.active_within_minutes,
-      country_codes: c.country_codes,
-      device_ids: c.device_ids,
-    });
-    const recipients = matched.length;
-    c.status = "sent";
-    c.scheduled_at = null;
-    c.sent_at = isoNow();
-    c.recipients_count = recipients;
-    c.sent_count = recipients;
-    c.delivered_count = Math.floor(recipients * 0.84);
-    c.opened_count = Math.floor(recipients * 0.084);
-    c.clicked_count = Math.floor(recipients * 0.017);
-    c.failed_count = Math.max(0, recipients - c.delivered_count);
-    app.total_pushes_sent += recipients;
-    this.recalcAppMetrics(c.app_id);
-    return c;
+  async sendDraftCampaign(id: string): Promise<Campaign> {
+    if (!this.useDatabase) {
+      const c = this.campaigns.find((x) => x.id === id);
+      if (!c) throw new Error("not_found");
+      if (c.status !== "draft") throw new Error("invalid_state");
+      const app = this.apps.get(c.app_id);
+      if (!app) throw new Error("app_not_found");
+      const matched = this.matchSubscribers(c.app_id, {
+        type: c.target_type,
+        active_within_minutes: c.active_within_minutes,
+        country_codes: c.country_codes,
+        device_ids: c.device_ids,
+      });
+      const recipients = matched.length;
+      c.status = "sent";
+      c.scheduled_at = null;
+      c.sent_at = isoNow();
+      c.recipients_count = recipients;
+      c.sent_count = recipients;
+      c.delivered_count = Math.floor(recipients * 0.84);
+      c.opened_count = Math.floor(recipients * 0.084);
+      c.clicked_count = Math.floor(recipients * 0.017);
+      c.failed_count = Math.max(0, recipients - c.delivered_count);
+      app.total_pushes_sent += recipients;
+      this.recalcAppMetrics(c.app_id);
+      return c;
+    }
+
+    const { rows } = await query<Campaign>(`
+      UPDATE push_campaigns
+      SET status = 'sent', sent_at = NOW()
+      WHERE id = $1 AND status = 'draft'
+      RETURNING *
+    `, [id]);
+
+    if (rows.length === 0) throw new Error("Campaign not found or already sent");
+    return rows[0]!;
   }
 
   // --- Users ---
@@ -1690,13 +2098,13 @@ export class ApkZioStore {
    * Used by `POST /api/builder/builds` so each authenticated build is owned
    * by a real app row in the existing apps store.
    */
-  getOrCreatePublicBuilderApp(userId: string): AndroidApp {
+  async getOrCreatePublicBuilderApp(userId: string): Promise<AndroidApp> {
     const owned = this.userApps.get(userId) ?? [];
     for (const id of owned) {
       const app = this.apps.get(id);
       if (app && app.name === "Public builder") return app;
     }
-    const app = this.createApp({
+    const app = await this.createApp({
       name: "Public builder",
       package_name: `com.apkzio.user${userId.slice(0, 8).replace(/-/g, "")}`,
       icon_glyph: "PB",
@@ -2001,6 +2409,116 @@ export class ApkZioStore {
     };
   }
 
+  /** Create a new admin client (user) from the admin console. */
+  createAdminClient(input: {
+    email: string;
+    full_name: string;
+    plan?: AuthUser["plan"];
+    phone?: string;
+    location?: string;
+    website?: string;
+    bio?: string;
+  }): AdminClientSummary {
+    const email = (input.email ?? "").trim().toLowerCase();
+    const fullName = (input.full_name ?? "").trim();
+    if (!isValidEmail(email)) throw new Error("invalid_email");
+    if (!fullName) throw new Error("invalid_full_name");
+    if (this.usersByEmail.has(email)) throw new Error("email_in_use");
+
+    // Generate a random password for admin-created accounts (user can reset it)
+    const randomPw = crypto.randomBytes(24).toString("hex");
+    const { hash, salt } = hashPassword(randomPw);
+    const now = isoNow();
+    const plan = input.plan ?? "starter";
+    if (plan !== "starter" && plan !== "pro" && plan !== "business" && plan !== "enterprise") {
+      throw new Error("invalid_plan");
+    }
+
+    const user: StoredUser = {
+      id: uuid(),
+      email,
+      full_name: fullName,
+      plan,
+      email_verified: false,
+      created_at: now,
+      last_seen_at: now,
+      password_hash: hash,
+      password_salt: salt,
+      phone: input.phone,
+      location: input.location,
+      website: input.website,
+      bio: input.bio,
+    };
+
+    this.users.set(user.id, user);
+    this.usersByEmail.set(email, user.id);
+    this.userApps.set(user.id, []);
+    this.userCarts.set(user.id, { items: [], promo_code: null, discount_pct: 0 });
+    this.userSubscriptions.set(user.id, []);
+    this.userPayments.set(user.id, []);
+    this.userInvoices.set(user.id, []);
+
+    return this.adminClientSummaryForUser(user);
+  }
+
+  /** Update an admin client (user) from the admin console. */
+  updateAdminClient(userId: string, patch: {
+    full_name?: string;
+    plan?: AuthUser["plan"];
+    email_verified?: boolean;
+    phone?: string;
+    location?: string;
+    website?: string;
+    bio?: string;
+  }): AdminClientSummary {
+    const u = this.users.get(userId);
+    if (!u) throw new Error("not_found");
+
+    if (typeof patch.full_name === "string" && patch.full_name.trim()) {
+      u.full_name = patch.full_name.trim();
+    }
+    if (
+      patch.plan === "starter" ||
+      patch.plan === "pro" ||
+      patch.plan === "business" ||
+      patch.plan === "enterprise"
+    ) {
+      u.plan = patch.plan;
+    }
+    if (typeof patch.email_verified === "boolean") {
+      u.email_verified = patch.email_verified;
+    }
+    if (typeof patch.phone === "string") u.phone = patch.phone.trim();
+    if (typeof patch.location === "string") u.location = patch.location.trim();
+    if (typeof patch.website === "string") u.website = patch.website.trim();
+    if (typeof patch.bio === "string") u.bio = patch.bio.trim();
+
+    return this.adminClientSummaryForUser(u);
+  }
+
+  /** Delete an admin client (user) from the admin console. */
+  deleteAdminClient(userId: string): boolean {
+    const u = this.users.get(userId);
+    if (!u) return false;
+
+    // Remove user from email index
+    this.usersByEmail.delete(u.email);
+    if (u.google_uid) this.usersByGoogleUid.delete(u.google_uid);
+
+    // Clean up all associated data
+    this.userApps.delete(userId);
+    this.userCarts.delete(userId);
+    this.userSubscriptions.delete(userId);
+    this.userPayments.delete(userId);
+    this.userInvoices.delete(userId);
+    this.userPushTokens.delete(userId);
+
+    // Remove the user
+    this.users.delete(userId);
+
+    return true;
+  }
+
   // --- Contact form ---
 
   recordContactMessage(input: {
@@ -2065,7 +2583,252 @@ export class ApkZioStore {
     }));
     return { dailyInstalls, hourlyHeartbeats, geoBreakdown: geo, recentEvents };
   }
+
+  /**
+   * Get daily install count trends for a specific app.
+   * Returns an array of values (not timestamps) for sparkline rendering.
+   * Later: query real events table when available.
+   */
+  getAppInstallTrends(appId: string, days: number): number[] {
+    const app = this.apps.get(appId);
+    if (!app) return Array(days).fill(0);
+    
+    // Seed the RNG using app ID so trends are stable across requests
+    const r = mulberry32(hash32(appId + "-installs"));
+    const result: number[] = [];
+    
+    // Base value proportional to total installs, with some variation
+    let base = Math.max(100, app.total_installs / 30);
+    
+    for (let i = days - 1; i >= 0; i--) {
+      // Add controlled randomness and slight upward trend
+      base *= 0.95 + r() * 0.1;
+      const value = Math.max(0, Math.floor(base + (r() - 0.5) * (base * 0.3)));
+      result.push(value);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Get hourly active user counts for a specific app.
+   * Returns an array of values for the last N hours.
+   */
+  getAppHeartbeatTrends(appId: string, hours: number): number[] {
+    const app = this.apps.get(appId);
+    if (!app) return Array(hours).fill(0);
+    
+    const r = mulberry32(hash32(appId + "-heartbeats"));
+    const result: number[] = [];
+    
+    // Base value proportional to active devices
+    const base = Math.max(10, app.active_devices_24h / 4);
+    
+    for (let i = hours - 1; i >= 0; i--) {
+      const hourOfDay = (new Date().getHours() - i + 24) % 24;
+      // Model daily patterns: lower at night, higher during day
+      const timeMultiplier = hourOfDay >= 6 && hourOfDay <= 22 ? 1.2 : 0.6;
+      const value = Math.max(0, Math.floor(base * timeMultiplier * (0.8 + r() * 0.4)));
+      result.push(value);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Get trend data for a specific event name.
+   * Used for drill-in modals in Analytics.tsx.
+   */
+  getEventTrends(eventName: string, days: number): number[] {
+    const r = mulberry32(hash32(eventName + "-trends"));
+    const result: number[] = [];
+    
+    // Generate plausible event counts
+    let base = 1000 + r() * 5000;
+    
+    for (let i = days - 1; i >= 0; i--) {
+      base *= 0.92 + r() * 0.16;
+      const value = Math.max(0, Math.floor(base + (r() - 0.5) * (base * 0.4)));
+      result.push(value);
+    }
+    
+    return result;
+  }
+
+  // --- Crash Analytics ---
+
+  private crashes: CrashEvent[] = [];
+  private campaignErrors: CampaignError[] = [];
+
+  recordCrash(input: {
+    app_id: string;
+    device_id?: string;
+    crash_type: string;
+    stack_trace?: string;
+    app_version?: string;
+    os_version?: string;
+    manufacturer?: string;
+    model?: string;
+    metadata?: Record<string, unknown>;
+  }): { crash_id: string } {
+    const app = this.apps.get(input.app_id);
+    if (!app) throw new Error("app_not_found");
+
+    const crash: CrashEvent = {
+      id: uuid(),
+      app_id: input.app_id,
+      device_id: input.device_id ?? null,
+      crash_type: input.crash_type,
+      stack_trace: input.stack_trace ?? null,
+      app_version: input.app_version ?? null,
+      os_version: input.os_version ?? null,
+      manufacturer: input.manufacturer ?? null,
+      model: input.model ?? null,
+      metadata: input.metadata ?? {},
+      created_at: isoNow(),
+    };
+
+    this.crashes.push(crash);
+    return { crash_id: crash.id };
+  }
+
+  getCrashAnalytics(appId: string, range: "7d" | "24h" | "30d"): {
+    total_crashes: number;
+    crash_rate: number;
+    trend: Point[];
+    by_type: { type: string; count: number; pct: number }[];
+  } {
+    const app = this.apps.get(appId);
+    if (!app) throw new Error("app_not_found");
+
+    const now = Date.now();
+    const rangeDays = range === "24h" ? 1 : range === "7d" ? 7 : 30;
+    const rangeMs = rangeDays * dayMs;
+    const startTime = now - rangeMs;
+
+    const crashes = this.crashes.filter(
+      (c) => c.app_id === appId && +new Date(c.created_at) >= startTime
+    );
+
+    const totalCrashes = crashes.length;
+    const activeDevices = app.active_devices_24h;
+    const crashRate = activeDevices > 0 ? (totalCrashes / activeDevices) * 100 : 0;
+
+    // Build trend (hourly or daily buckets)
+    const bucketMs = range === "24h" ? 3600_000 : dayMs;
+    const bucketCount = range === "24h" ? 24 : rangeDays;
+    const trend: Point[] = [];
+
+    for (let i = bucketCount - 1; i >= 0; i--) {
+      const bucketStart = now - i * bucketMs;
+      const bucketEnd = bucketStart + bucketMs;
+      const count = crashes.filter((c) => {
+        const t = +new Date(c.created_at);
+        return t >= bucketStart && t < bucketEnd;
+      }).length;
+      trend.push({ t: bucketStart, v: count });
+    }
+
+    // Group by type
+    const byType: Record<string, number> = {};
+    for (const c of crashes) {
+      byType[c.crash_type] = (byType[c.crash_type] ?? 0) + 1;
+    }
+
+    const byTypeArray = Object.entries(byType)
+      .map(([type, count]) => ({
+        type,
+        count,
+        pct: totalCrashes > 0 ? (count / totalCrashes) * 100 : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return {
+      total_crashes: totalCrashes,
+      crash_rate: Math.round(crashRate * 100) / 100,
+      trend,
+      by_type: byTypeArray,
+    };
+  }
+
+  recordCampaignError(input: {
+    campaign_id: string;
+    error_code: string;
+    error_message?: string;
+    subscriber_id?: string;
+    device_info?: Record<string, unknown>;
+  }): { error_id: string } {
+    const campaign = this.campaigns.find((c) => c.id === input.campaign_id);
+    if (!campaign) throw new Error("campaign_not_found");
+
+    const error: CampaignError = {
+      id: uuid(),
+      campaign_id: input.campaign_id,
+      error_code: input.error_code,
+      error_message: input.error_message ?? null,
+      subscriber_id: input.subscriber_id ?? null,
+      device_info: input.device_info ?? {},
+      created_at: isoNow(),
+    };
+
+    this.campaignErrors.push(error);
+    return { error_id: error.id };
+  }
+
+  getCampaignErrors(campaignId: string): {
+    total: number;
+    by_code: { code: string; count: number; message: string; pct: number }[];
+  } {
+    const campaign = this.campaigns.find((c) => c.id === campaignId);
+    if (!campaign) throw new Error("campaign_not_found");
+
+    const errors = this.campaignErrors.filter((e) => e.campaign_id === campaignId);
+    const total = errors.length;
+
+    const byCode: Record<string, { count: number; message: string }> = {};
+    for (const e of errors) {
+      if (!byCode[e.error_code]) {
+        byCode[e.error_code] = { count: 0, message: e.error_message ?? "" };
+      }
+      byCode[e.error_code]!.count++;
+    }
+
+    const byCodeArray = Object.entries(byCode)
+      .map(([code, { count, message }]) => ({
+        code,
+        count,
+        message,
+        pct: total > 0 ? (count / total) * 100 : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return { total, by_code: byCodeArray };
+  }
 }
+
+type CrashEvent = {
+  id: string;
+  app_id: string;
+  device_id: string | null;
+  crash_type: string;
+  stack_trace: string | null;
+  app_version: string | null;
+  os_version: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+type CampaignError = {
+  id: string;
+  campaign_id: string;
+  error_code: string;
+  error_message: string | null;
+  subscriber_id: string | null;
+  device_info: Record<string, unknown>;
+  created_at: string;
+};
 
 const dayMs = 86400_000;
 

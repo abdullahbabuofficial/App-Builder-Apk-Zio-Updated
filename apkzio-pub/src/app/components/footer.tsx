@@ -12,12 +12,16 @@ export function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8 lg:gap-12">
           <div className="lg:col-span-2">
             <div className="flex items-center gap-2 mb-4">
-              <div className="p-2 rounded-xl bg-gradient-to-br from-primary to-secondary">
-                <Rocket className="h-6 w-6 text-white" />
-              </div>
-              <span className="text-2xl font-bold bg-gradient-to-r from-primary via-secondary to-accent bg-clip-text text-transparent">
-                ApkZio
-              </span>
+              <img 
+                src="/logo.png" 
+                alt="ApkZio" 
+                className="h-10 w-auto dark:hidden" 
+              />
+              <img 
+                src="/logo-dark.png" 
+                alt="ApkZio" 
+                className="h-10 w-auto hidden dark:block" 
+              />
             </div>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm leading-relaxed">
               Turn your website into an Android app in seconds. No coding required —

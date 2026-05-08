@@ -63,6 +63,31 @@ local-api:test:
     - npm run build
     - npm run test
 
+# Monitoring health and metrics tests
+local-api:monitoring-test:
+  stage: test
+  image: node:20
+  rules:
+    - changes:
+        - backends/local-api/**/*
+        - .gitlab-ci.yml
+  before_script:
+    - cd backends/local-api
+    - npm ci
+    - apt-get update && apt-get install -y curl
+  script:
+    - echo "Starting monitoring tests..."
+    - npm run dev &
+    - SERVER_PID=$!
+    - sleep 10
+    - echo "Testing health endpoint..."
+    - curl -f http://localhost:8787/health || exit 1
+    - echo "Testing metrics endpoint..."
+    - curl -f http://localhost:8787/metrics | grep -q "http_requests_total" || exit 1
+    - kill $SERVER_PID || true
+    - echo "✅ Monitoring tests passed!"
+  allow_failure: true
+
 local-api:apk-e2e:
   stage: test
   image: node:20-bookworm

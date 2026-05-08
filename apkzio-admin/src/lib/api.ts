@@ -118,7 +118,7 @@ function apiPath(path: string): string {
   return `${APKZIO_API_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   if (!APKZIO_API_URL) {
     throw new Error("VITE_APKZIO_API_URL is not set");
   }
@@ -126,6 +126,10 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (restAccessToken) headers.set("Authorization", `Bearer ${restAccessToken}`);
+  // Always include admin key if configured (required for all admin operations)
+  if (APKZIO_ADMIN_API_KEY && !headers.has("X-Apkzio-Admin-Key")) {
+    headers.set("X-Apkzio-Admin-Key", APKZIO_ADMIN_API_KEY);
+  }
 
   const method = (init?.method ?? "GET").toUpperCase();
   const allowRetry = method === "GET" || method === "HEAD";
@@ -212,6 +216,49 @@ export async function fetchAnalyticsOverview(seed = "global"): Promise<Analytics
   const q = new URLSearchParams({ seed });
   const res = await apiFetch(`/api/analytics/overview?${q}`);
   return parseJson<AnalyticsOverview>(res);
+}
+
+export async function getAppInstallTrends(appId: string, days: number): Promise<{ trends: number[] }> {
+  const q = new URLSearchParams({ days: String(days) });
+  const res = await apiFetch(`/api/apps/${encodeURIComponent(appId)}/analytics/installs?${q}`);
+  return parseJson<{ trends: number[] }>(res);
+}
+
+export async function getAppHeartbeatTrends(appId: string, hours: number): Promise<{ trends: number[] }> {
+  const q = new URLSearchParams({ hours: String(hours) });
+  const res = await apiFetch(`/api/apps/${encodeURIComponent(appId)}/analytics/heartbeats?${q}`);
+  return parseJson<{ trends: number[] }>(res);
+}
+
+export async function getEventTrends(eventName: string, days: number): Promise<{ trends: number[] }> {
+  const q = new URLSearchParams({ days: String(days) });
+  const res = await apiFetch(`/api/analytics/events/${encodeURIComponent(eventName)}/trends?${q}`);
+  return parseJson<{ trends: number[] }>(res);
+}
+
+export type CrashAnalytics = {
+  total_crashes: number;
+  crash_rate: number;
+  trend: Point[];
+  by_type: { type: string; count: number; pct: number }[];
+};
+
+export async function fetchCrashAnalytics(appId: string, range: "7d" | "24h" | "30d" = "7d"): Promise<CrashAnalytics> {
+  const q = new URLSearchParams({ app_id: appId, range });
+  const res = await apiFetch(`/api/analytics/crashes?${q}`);
+  const data = await parseJson<{ ok?: boolean; data: CrashAnalytics }>(res);
+  return data.data;
+}
+
+export type CampaignErrorsResponse = {
+  total: number;
+  by_code: { code: string; count: number; message: string; pct: number }[];
+};
+
+export async function fetchCampaignErrors(campaignId: string): Promise<CampaignErrorsResponse> {
+  const res = await apiFetch(`/api/campaigns/${encodeURIComponent(campaignId)}/errors`);
+  const data = await parseJson<{ ok?: boolean; errors: CampaignErrorsResponse }>(res);
+  return data.errors;
 }
 
 export async function postCampaign(body: CreateCampaignInput): Promise<Campaign> {
@@ -565,4 +612,88 @@ export async function fetchAdminClientDetail(userId: string): Promise<AdminClien
   const res = await apiFetch(`/api/admin/clients/${encodeURIComponent(userId)}`, { headers });
   const data = await parseJson<{ ok?: boolean; client: AdminClientDetail }>(res);
   return data.client;
+}
+
+export type CreateAdminClientInput = {
+  email: string;
+  full_name: string;
+  plan?: "starter" | "pro" | "business" | "enterprise";
+  phone?: string;
+  location?: string;
+  website?: string;
+  bio?: string;
+};
+
+export async function createAdminClient(input: CreateAdminClientInput): Promise<AdminClientSummary> {
+  const headers = adminHeaders();
+  const res = await apiFetch("/api/admin/clients", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  const data = await parseJson<{ ok?: boolean; client: AdminClientSummary }>(res);
+  return data.client;
+}
+
+export type UpdateAdminClientInput = Partial<{
+  full_name: string;
+  plan: "starter" | "pro" | "business" | "enterprise";
+  email_verified: boolean;
+  phone: string;
+  location: string;
+  website: string;
+  bio: string;
+}>;
+
+export async function updateAdminClient(
+  userId: string,
+  input: UpdateAdminClientInput,
+): Promise<AdminClientSummary> {
+  const headers = adminHeaders();
+  const res = await apiFetch(`/api/admin/clients/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(input),
+  });
+  const data = await parseJson<{ ok?: boolean; client: AdminClientSummary }>(res);
+  return data.client;
+}
+
+export async function deleteAdminClient(userId: string): Promise<void> {
+  const headers = adminHeaders();
+  await apiFetch(`/api/admin/clients/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+    headers,
+  });
+}
+
+export async function impersonateAdminClient(userId: string): Promise<{
+  token: string;
+  user: {
+    id: string;
+    email: string;
+    full_name: string;
+    plan: "starter" | "pro" | "business" | "enterprise";
+    email_verified: boolean;
+    created_at: string;
+  };
+}> {
+  const headers = adminHeaders();
+  const res = await apiFetch(`/api/admin/clients/${encodeURIComponent(userId)}/impersonate`, {
+    method: "POST",
+    headers,
+  });
+  const data = await parseJson<{
+    ok?: boolean;
+    token: string;
+    user: {
+      id: string;
+      email: string;
+      full_name: string;
+      plan: "starter" | "pro" | "business" | "enterprise";
+      email_verified: boolean;
+      created_at: string;
+    };
+  }>(res);
+  return { token: data.token, user: data.user };
 }

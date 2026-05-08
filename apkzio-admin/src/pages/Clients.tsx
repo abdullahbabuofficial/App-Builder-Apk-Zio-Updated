@@ -204,7 +204,8 @@ export function Clients() {
         }
       />
 
-      {!isMock && dataSource === "supabase" && (
+      {/* Supabase data source not supported in REST mode */}
+      {false && dataSource === "supabase" && (
         <Card className="mb-5 border-warn/30 bg-warn/5">
           <div className="p-4 text-[13px] text-bone">
             <div className="font-medium text-warn">Supabase data mode</div>

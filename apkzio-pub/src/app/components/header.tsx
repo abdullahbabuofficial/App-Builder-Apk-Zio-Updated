@@ -21,9 +21,17 @@ export function Header() {
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
-          <Link to="/" className="flex items-center gap-2">
-            <Rocket className="h-8 w-8 text-primary" />
-            <span className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">ApkZio</span>
+          <Link to="/" className="flex items-center gap-2 group">
+            <img 
+              src="/logo.png" 
+              alt="ApkZio" 
+              className="h-10 w-auto transition-transform duration-300 group-hover:scale-105 dark:hidden" 
+            />
+            <img 
+              src="/logo-dark.png" 
+              alt="ApkZio" 
+              className="h-10 w-auto transition-transform duration-300 group-hover:scale-105 hidden dark:block" 
+            />
           </Link>
 
           <nav className="hidden md:flex items-center gap-6">

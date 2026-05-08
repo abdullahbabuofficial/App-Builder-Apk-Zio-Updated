@@ -1,5 +1,5 @@
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -17,6 +17,8 @@ import { cn } from "@/lib/utils";
 import { useApkzio } from "@/context/ApkzioDataContext";
 import { useAnalyticsOverview } from "@/hooks/useAnalyticsOverview";
 import { useToast } from "@/components/ui/Toast";
+import type { CampaignErrorsResponse } from "@/lib/api";
+import { fetchCampaignErrors } from "@/lib/api";
 
 const REST_ACTIONS_HINT =
   "Pause, cancel, and duplicate require the ApkZio REST API (VITE_APKZIO_DATA_SOURCE=rest with VITE_APKZIO_API_URL). Not available in mock or Supabase-backed mode.";
@@ -38,6 +40,21 @@ export function CampaignDetail() {
   const c = findCampaign(id);
   const overview = useAnalyticsOverview(id ?? "campaign-detail");
   const [tab, setTab] = useState("overview");
+  const [campaignErrors, setCampaignErrors] = useState<CampaignErrorsResponse | null>(null);
+  const [errorsLoading, setErrorsLoading] = useState(false);
+
+  // Fetch campaign errors when tab changes to errors or data source changes
+  useEffect(() => {
+    if (tab !== "errors" || !id || dataSource === "mock") {
+      setCampaignErrors(null);
+      return;
+    }
+    setErrorsLoading(true);
+    fetchCampaignErrors(id)
+      .then(setCampaignErrors)
+      .catch(() => setCampaignErrors(null))
+      .finally(() => setErrorsLoading(false));
+  }, [id, tab, dataSource]);
 
   if (!c) {
     return (
@@ -278,6 +295,39 @@ export function CampaignDetail() {
       {tab === "errors" && (
         c.failed_count === 0 ? (
           <EmptyState icon={<Icon.Check size={18} />} title="No errors" description="All sent messages were accepted by FCM." />
+        ) : errorsLoading ? (
+          <Card>
+            <CardHeader title="Errors" description="Loading error details…" />
+            <CardBody>
+              <div className="py-8 text-center text-bone-mid">
+                <div className="mb-2">Loading campaign errors…</div>
+              </div>
+            </CardBody>
+          </Card>
+        ) : dataSource !== "mock" && campaignErrors && campaignErrors.by_code.length > 0 ? (
+          <Card>
+            <CardHeader
+              title="Errors"
+              description={`${commas(campaignErrors.total)} deliveries failed`}
+            />
+            <CardBody padded={false}>
+              <ul>
+                {campaignErrors.by_code.map((e) => (
+                  <li key={e.code} className="flex items-center gap-4 border-b border-line-1/70 px-5 py-4 last:border-b-0">
+                    <Icon.Alert size={16} className="text-warn" />
+                    <div className="flex-1">
+                      <div className="font-mono text-[12px] text-bone">{e.code}</div>
+                      <div className="text-[12px] text-bone-mid">{e.message || "No description"}</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="font-mono text-[13px] tabular-nums text-bone">{commas(e.count)}</div>
+                      <div className="text-[11px] text-bone-low">{pct(e.pct, 1)}</div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </CardBody>
+          </Card>
         ) : (
           <Card>
             <CardHeader

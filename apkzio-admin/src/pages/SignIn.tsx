@@ -54,10 +54,7 @@ export function SignIn() {
 
         {/* Brand mark */}
         <div className="relative z-10 flex items-center gap-2.5 p-10">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-signal text-ink-0">
-            <Icon.Logo size={20} />
-          </div>
-          <span className="font-display text-[20px] font-semibold tracking-tight">ApkZio</span>
+          <img src="/logo-dark.png" alt="ApkZio" className="h-12 w-auto" />
         </div>
 
         {/* Hero */}
@@ -107,10 +104,7 @@ export function SignIn() {
         <div className="w-full max-w-sm">
           {/* Mobile brand */}
           <div className="mb-10 flex items-center gap-2.5 lg:hidden">
-            <div className="grid h-9 w-9 place-items-center rounded-md bg-signal text-ink-0">
-              <Icon.Logo size={20} />
-            </div>
-            <span className="font-display text-[20px] font-semibold tracking-tight">ApkZio</span>
+            <img src="/logo.png" alt="ApkZio" className="h-12 w-auto" />
           </div>
 
           <div className="mb-1 font-mono text-[11px] uppercase tracking-[0.18em] text-bone-low">
